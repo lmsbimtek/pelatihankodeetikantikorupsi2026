@@ -746,6 +746,27 @@ function restoreLegacySnapshot(inp){
 /* ============ START ============ */
 async function initApp(){
  load();
+ // Load only public display settings from cloud before showing the login landing page.
+ // If the cloud is unavailable, the existing local/default settings remain as fallback.
+ try{
+  const publicConfig=await cloudRequest('lms-data',{action:'public-config'},null);
+  if(publicConfig?.ui){
+   DB.ui=DB.ui||{};
+   for(const key of ['title','subtitle','brand','brandSub']){
+    if(typeof publicConfig.ui[key]==='string'&&publicConfig.ui[key].trim())DB.ui[key]=publicConfig.ui[key];
+   }
+  }
+  if(publicConfig?.sched){
+   DB.sched=DB.sched||{};
+   for(const key of ['vr1','vr2']){
+    if(typeof publicConfig.sched[key]?.title==='string'&&publicConfig.sched[key].title.trim()){
+     DB.sched[key]=DB.sched[key]||{};
+     DB.sched[key].title=publicConfig.sched[key].title;
+    }
+   }
+  }
+  try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){}
+ }catch(e){console.warn('Pengaturan tampilan cloud belum dapat dimuat sebelum login:',e)}
  let token=null;try{token=sessionStorage.getItem(CK)}catch(e){}
  if(token){
   try{
