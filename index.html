@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>LMS Pelatihan Kode Etik dan Antikorupsi</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 :root{--p:#1e3a5f;--a:#b8860b;--bg:#f3f5f8;--c:#fff;--t:#1f2937;--m:#6b7280;--ok:#15803d;--w:#b45309;--b:#b91c1c;--g:#e5e7eb;--r:12px}
 *{box-sizing:border-box}
@@ -102,7 +103,8 @@ const fmtLeft=ms=>{const s=Math.max(0,Math.floor(ms/1000));return [Math.floor(s/
 const pwOk=p=>p.length>=8&&/[A-Za-z]/.test(p)&&/\d/.test(p);
 function strength(p){let s=0;if(p.length>=8)s++;if(/[a-z]/.test(p)&&/[A-Z]/.test(p))s++;if(/\d/.test(p))s++;if(/[^A-Za-z0-9]/.test(p))s++;if(p.length>=12)s++;return s<=2?['Lemah','#b91c1c',33]:s<=4?['Sedang','#b45309',66]:['Kuat','#15803d',100]}
 const strengthHtml=v=>{if(!v)return'';const[t,c,w]=strength(v);return `<div class="bar" style="margin-top:6px"><i style="width:${w}%;background:${c}"></i></div><small style="color:${c}">Kekuatan password: ${t}</small>`};
-function toast(m,t=''){const d=document.createElement('div');d.className='toast '+t;d.textContent=m;$('#toasts').append(d);setTimeout(()=>d.remove(),3800)}
+const TOAST_SEEN=new Map();
+function toast(m,t=''){const key=t+'|'+m,nowTs=Date.now(),last=TOAST_SEEN.get(key)||0;if(nowTs-last<5000)return;TOAST_SEEN.set(key,nowTs);const d=document.createElement('div');d.className='toast '+t;d.textContent=m;$('#toasts').append(d);setTimeout(()=>d.remove(),3800);setTimeout(()=>{if(TOAST_SEEN.get(key)===nowTs)TOAST_SEEN.delete(key)},5500)}
 function modal(h){const m=document.createElement('div');m.className='modal';m.innerHTML='<div>'+h+'</div>';m.onclick=e=>{if(e.target===m)m.remove()};document.body.append(m)}
 window.closeM=()=>document.querySelectorAll('.modal').forEach(x=>x.remove());
 window.tgl=(id,b)=>{const el=document.getElementById(id);el.type=el.type==='password'?'text':'password';b.textContent=el.type==='password'?'Tampilkan':'Sembunyikan'};
@@ -129,7 +131,15 @@ async function cloudRequest(fn,body,token=CLOUD_TOKEN){
  const r=await fetch(SUPABASE_URL+'/functions/v1/'+fn,{method:'POST',headers,body:JSON.stringify(body||{})});
  const j=await r.json().catch(()=>({error:'Respons server tidak valid'}));if(!r.ok){const err=new Error(j.error||j.message||('HTTP '+r.status));err.status=r.status;throw err;}return j;
 }
-async function cloudSave(){if(!CLOUD_TOKEN||!DB||CLOUD_BUSY)return;try{CLOUD_BUSY=true;await cloudRequest('lms-data',{action:'save',database:DB});}catch(e){console.error('Cloud save:',e);toast('Perubahan tersimpan di browser, tetapi sinkronisasi cloud gagal: '+e.message,'err')}finally{CLOUD_BUSY=false}}
+async function cloudSave(){if(!CLOUD_TOKEN||!DB)return;if(CLOUD_BUSY){clearTimeout(CLOUD_TIMER);CLOUD_TIMER=setTimeout(()=>cloudSave(),900);return}try{CLOUD_BUSY=true;await cloudRequest('lms-data',{action:'save',database:DB});}catch(e){console.error('Cloud save:',e);toast('Perubahan tersimpan di browser, tetapi sinkronisasi cloud gagal: '+e.message,'err')}finally{CLOUD_BUSY=false}}
+async function persistAdminControl(message){
+ if(!save())return false;
+ if(!CLOUD_TOKEN){toast(message+' Tersimpan di browser ini saja; Admin perlu login cloud agar perubahan diterima peserta di perangkat lain.','warn');return true}
+ clearTimeout(CLOUD_TIMER);
+ try{while(CLOUD_BUSY)await new Promise(r=>setTimeout(r,150));CLOUD_BUSY=true;await cloudRequest('lms-data',{action:'save',database:DB});toast(message+' Perubahan sudah dikirim ke cloud.','ok');return true}
+ catch(e){console.error('Admin control sync:',e);toast(message+' Namun sinkronisasi cloud gagal: '+e.message,'err');return false}
+ finally{CLOUD_BUSY=false}
+}
 async function cloudLogin(username,password){
  const a=await cloudRequest('username-login',{username,password},null);if(!a.access_token||!a.profile)throw new Error('Respons autentikasi cloud tidak lengkap.');
  CLOUD_TOKEN=a.access_token;try{sessionStorage.setItem(CK,CLOUD_TOKEN)}catch(e){}
@@ -159,9 +169,27 @@ function isDone(p,st){
  return false;
 }
 function unlocked(p,st){
+ if(p?.menuAccess && Object.prototype.hasOwnProperty.call(p.menuAccess,st)) return p.menuAccess[st]===true;
  if(st==='vr1'||st==='vr2'){const s=vrStat(st);return s==='live'||s==='selesai'}
  const i=ORDER.indexOf(st);if(i<0)return false;if(i===0)return true;
  return isDone(p,ORDER[i-1]);
+}
+function toggleParticipantMenu(id,st){
+ if(U?.role!=='admin'){toast('Hanya Admin yang dapat mengubah akses menu.','err');return}
+ const p=DB.users.find(x=>x.id===id&&x.role==='peserta');if(!p)return;
+ p.menuAccess=p.menuAccess||{};
+ const currentlyOpen=Object.prototype.hasOwnProperty.call(p.menuAccess,st)?p.menuAccess[st]:unlocked(p,st);
+ p.menuAccess[st]=!currentlyOpen;
+ p.logs=p.logs||[];p.logs.push({t:now(),a:`Admin ${p.menuAccess[st]?'membuka':'mengunci'} menu ${L[st]||st}`});
+ if(save()){toast(`Menu ${L[st]||st} ${p.menuAccess[st]?'dibuka':'dikunci'}.`,'ok');detail(id)}
+}
+function resetParticipantMenuAccess(id){
+ if(U?.role!=='admin'){toast('Hanya Admin yang dapat mengubah akses menu.','err');return}
+ const p=DB.users.find(x=>x.id===id&&x.role==='peserta');if(!p)return;
+ if(!confirm('Kembalikan akses menu peserta ini ke aturan otomatis LMS? Progres dan data peserta tidak dihapus.'))return;
+ delete p.menuAccess;
+ p.logs=p.logs||[];p.logs.push({t:now(),a:'Admin mengembalikan akses menu ke aturan otomatis LMS'});
+ if(save()){toast('Akses menu kembali mengikuti aturan otomatis LMS.','ok');detail(id)}
 }
 const doneCount=p=>STEPS.filter(s=>isDone(p,s)).length;
 const prog=p=>Math.round(doneCount(p)/STEPS.length*100);
@@ -177,16 +205,19 @@ window.setPg=(k,n)=>{if(k==='peserta'){S.pf.pg=n;drawPT()}else{S.kf.pg=n;drawHD(
 /* ============ SISTEM UJIAN & KUIS ============ */
 function ansE(i,o){const k=S.exam;if(!k||!U.ex[k]||U.ex[k].done)return;U.ex[k].ans[i]=o;save()}
 function ansQ(i,o){const k=S.qk;if(!k)return;S.qa[k]=S.qa[k]||{};S.qa[k][i]=o}
-function startExam(k){U.ex=U.ex||{};U.ex[k]={start:now(),ans:{},tabs:0,done:false};save();log('Mulai '+L[k]);try{document.documentElement.requestFullscreen?.().catch(()=>{})}catch(e){}toast('Ujian dimulai. Timer berjalan.','ok');render()}
+function examDeadline(e){return Number.isFinite(e?.deadlineOverride)?e.deadlineOverride:(e?.start||0)+(Number.isFinite(e?.durationMs)?e.durationMs:(Number(U?.examDurationMs?.[S.exam])||EXAM_MS))}
+function startExam(k){U.ex=U.ex||{};U.ex[k]={start:now(),ans:{},tabs:0,done:false,durationMs:Number(U.examDurationMs?.[k])||EXAM_MS};save();log('Mulai '+L[k]);try{document.documentElement.requestFullscreen?.().catch(()=>{})}catch(e){}toast('Ujian dimulai. Timer berjalan.','ok');render()}
 async function submitExam(k,auto){
- const e=U.ex?.[k];if(!e||e.done)return;
+ const e=U.ex?.[k];if(!e||e.done||e.submitting||e.submitFailed)return;
+ const expired=now()>=examDeadline(e);
+ e.submitting=true;
  try{
   if(U.cloudAuth){const result=await cloudRequest('lms-data',{action:'grade',assessmentKey:k,answers:e.ans});Object.assign(U,result.user||{});}
   else{const qs=(DB.q[k]||[]).slice(0,EXAM_N);let c=0;qs.forEach((q,i)=>{if(e.ans[i]===q.k)c++});e.correct=c;e.score=qs.length?Math.round(c/qs.length*100):0;e.end=now();e.dur=Math.round((e.end-e.start)/1000);e.done=true;}
   save();log(`Selesai ${L[k]} nilai ${U.ex[k].score}`);S.exam=null;
   try{if(document.fullscreenElement)document.exitFullscreen?.().catch(()=>{})}catch(err){}
   toast((auto?'Waktu habis, jawaban dikirim otomatis. ':'')+`${L[k]} selesai. Nilai: ${U.ex[k].score}`,'ok');render();
- }catch(err){toast('Jawaban belum berhasil dikirim: '+err.message,'err')}
+ }catch(err){e.submitFailed=true;toast('Jawaban belum berhasil dikirim: '+err.message+' Jawaban tetap tersimpan di perangkat. Periksa koneksi lalu minta Admin memeriksa server sebelum mencoba kembali.','err')}finally{e.submitting=false}
 }
 function focusLost(){
  const k=S.exam;if(!k||!U.ex?.[k]||U.ex[k].done)return;if(now()-lastF<1500)return;lastF=now();
@@ -197,19 +228,56 @@ window.addEventListener('blur',focusLost);
 document.addEventListener('visibilitychange',()=>{if(document.hidden)focusLost()});
 setInterval(()=>{
  if(!U||U.role!=='peserta')return;
- for(const k of['tesAwal','tesAkhir']){const e=U.ex?.[k];if(e&&!e.done&&now()>=e.start+EXAM_MS){submitExam(k,true);return}}
- if(S.exam){const e=U.ex?.[S.exam];const el=$('#tmr');if(el&&e)el.textContent=fmtLeft(e.start+EXAM_MS-now())}
+ if(S.exam){const e=U.ex?.[S.exam];const el=$('#tmr');if(el&&e)el.textContent=fmtLeft(examDeadline(e)-now())}
 },1000);
+// Ambil perubahan kontrol Admin dari cloud secara berkala pada sesi peserta.
+// Ini membuat penambahan waktu dan kunci/buka kunci berlaku tanpa login ulang.
+let CLOUD_POLL_BUSY=false, lastAdminLockState=null;
+setInterval(async()=>{
+ if(!CLOUD_TOKEN||!U||U.role!=='peserta'||CLOUD_BUSY||CLOUD_POLL_BUSY||document.hidden)return;
+ CLOUD_POLL_BUSY=true;
+ try{
+  const oldId=U.id,oldLock=!!U.adminLocked;
+  const activeExam=S.exam, oldDeadline=activeExam?examDeadline(U.ex?.[activeExam]):null;
+  const oldTimeAdjusted=activeExam?U.ex?.[activeExam]?.timeAdjustedAt:null;
+  const oldAnswers=activeExam?JSON.stringify(U.ex?.[activeExam]?.ans||{}):null;
+  const r=await cloudRequest('lms-data',{action:'load'});
+  if(!r.database)return;
+  const next=r.database;
+  const fresh=(next.users||[]).find(x=>x.id===oldId)|| (next.users||[]).find(x=>String(x.username||'').toLowerCase()===String(U.username||'').toLowerCase());
+  if(!fresh)return;
+  // Keep in-progress local answers if the cloud snapshot is slightly behind.
+  if(activeExam && U.ex?.[activeExam] && fresh.ex?.[activeExam] && !fresh.ex[activeExam].done){
+   fresh.ex[activeExam].ans={...(U.ex[activeExam].ans||{}),...(fresh.ex[activeExam].ans||{})};
+  }
+  // Pull Admin updates from cloud while preserving unsent answers in the active exam.
+  DB=next;U=fresh;U.cloudAuth=true;
+  try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){}
+  const newDeadline=activeExam?examDeadline(U.ex?.[activeExam]):null;
+  const timer=$('#tmr');
+  if(activeExam && timer && (newDeadline!==oldDeadline || U.ex?.[activeExam]?.timeAdjustedAt!==oldTimeAdjusted)){
+   timer.textContent=fmtLeft(newDeadline-now());
+   if(newDeadline>now() && U.ex?.[activeExam]){U.ex[activeExam].submitFailed=false;U.ex[activeExam].submitting=false;}
+   render();
+  }
+  if(!!U.adminLocked!==oldLock){
+   if(U.adminLocked){S.exam=null;render();}
+   else {render();}
+  }
+ }catch(e){console.warn('Pemeriksaan perubahan Admin gagal:',e)}
+ finally{CLOUD_POLL_BUSY=false}
+},3000);
 const qCard=(q,i,sel,fn)=>`<div class="card"><b>${i+1}. ${esc(q.q)}</b>${['a','b','c','d'].map(o=>`<label class="qopt"><input type="radio" name="q${i}" ${sel===o?'checked':''} onchange="${fn}(${i},'${o}')">${o.toUpperCase()}. ${esc(q[o])}</label>`).join('')}</div>`;
 function examView(k){
  const e=U.ex?.[k],qs=DB.q[k]||[];
+ const examExpired=!!(e&&!e.done&&Number.isFinite(e.start)&&now()>=examDeadline(e));
  if(e?.done)return `<div class="card"><h3 style="margin-top:0">${L[k]}</h3><p>Nilai Anda: <b style="font-size:30px;color:var(--p)">${e.score}</b></p><div class="muted">Mulai: ${fmt(e.start)} · Selesai: ${fmt(e.end)} · Durasi: ${dur(e.dur*1000)} · Pindah tab: ${e.tabs||0}x</div></div>`;
  if(qs.length<EXAM_N)return `<div class="card"><h3 style="margin-top:0">${L[k]}</h3><div class="err">Bank soal belum lengkap (${qs.length}/${EXAM_N}). Hubungi Admin.</div></div>`;
  if(!e)return `<div class="card"><h3 style="margin-top:0">${L[k]}</h3><ul style="line-height:1.8"><li>${EXAM_N} soal pilihan ganda (4 pilihan)</li><li>Durasi 120 menit dengan timer otomatis</li><li>Jawaban tersimpan otomatis</li><li>Pengiriman otomatis saat waktu habis</li><li>Perpindahan tab atau hilang fokus dicatat</li></ul><button class="btn" onclick="startExam('${k}')">Mulai ${L[k]}</button></div>`;
  S.exam=k;
- return `<div class="card"><div class="row" style="justify-content:space-between"><b>${L[k]}</b><span class="timer" id="tmr">${fmtLeft(e.start+EXAM_MS-now())}</span></div><div class="muted">Pindah tab: <span id="tabs">${e.tabs||0}</span>x · Jawaban tersimpan otomatis</div></div>`+
+ return `<div class="card"><div class="row" style="justify-content:space-between"><b>${L[k]}</b><span class="timer" id="tmr">${fmtLeft(examDeadline(e)-now())}</span></div>${examExpired?'<div class="err">Waktu ujian telah habis</div>':''}<div class="muted">Pindah tab: <span id="tabs">${e.tabs||0}</span>x · Jawaban tersimpan otomatis</div></div>`+
  qs.slice(0,EXAM_N).map((q,i)=>qCard(q,i,e.ans[i],'ansE')).join('')+
- `<div class="card"><button class="btn g" onclick="if(confirm('Kirim jawaban sekarang?'))submitExam('${k}')">Kirim Jawaban</button></div>`;
+ `<div class="card"><button class="btn g" onclick="if(!${examExpired} && Object.keys(U.ex?.['${k}']?.ans||{}).length < (DB.q['${k}']||[]).slice(0,EXAM_N).length){toast('Masih ada soal yang belum dijawab. Lengkapi semua jawaban sebelum mengirim.','warn')}else if(confirm('Kirim jawaban sekarang?')){if(${examExpired})toast('Waktu ujian telah habis','warn');submitExam('${k}',${examExpired})}">Kirim Jawaban</button></div>`;
 }
 function quizView(k){
  if(!unlocked(U,k))return lockCard(k);
@@ -385,9 +453,11 @@ function pDash(){
  <div class="card">${ORDER.map(s=>stepRow(p,s)).join('')}</div>`;
 }
 function pBody(p,v){
+ if(p.adminLocked && v!=='profil' && v!=='akun')return `<div class="card"><h2>Akses Dikunci Admin</h2><p>Akses pelatihan Anda sementara dikunci oleh Admin. Silakan hubungi Admin untuk membuka kembali akses.</p></div>`;
  if(v==='dash')return pDash();
  if(v==='profil')return profil();
  if(v==='akun')return akunView();
+ if(v==='sertifikat')return participantCertificateView(p);
  if(!unlocked(p,v))return lockCard(v);
  if(v==='tesAwal'||v==='tesAkhir')return examView(v);
  if(v==='mod1'||v==='mod2')return modView(v.slice(3));
@@ -399,7 +469,7 @@ function pBody(p,v){
 function pesRender(){
  const p=U;
  if(ORDER.includes(S.v)&&unlocked(p,S.v)){p.seen=p.seen||{};if(!p.seen[S.v]){p.seen[S.v]=true;save()}}
- const nav=[['dash',menuLabel('dash','Dashboard')],...ORDER.map(k=>[k,(unlocked(p,k)?'':'🔒 ')+menuLabel(k,L[k])]),['profil',menuLabel('profil','Profil')],['akun',menuLabel('akun','Pengaturan Akun / Reset Password')]];
+ const nav=[['dash',menuLabel('dash','Dashboard')],...ORDER.map(k=>[k,(unlocked(p,k)?'':'🔒 ')+menuLabel(k,L[k])]),['sertifikat',menuLabel('sertifikat','Sertifikat')],['profil',menuLabel('profil','Profil')],['akun',menuLabel('akun','Pengaturan Akun / Reset Password')]];
  const body=pBody(p,S.v);
  $('#app').innerHTML=shell(nav,body);
  if(S.v==='tesAwal'||S.v==='tesAkhir')S.exam=(p.ex?.[S.v]&&!p.ex[S.v].done)?S.v:null;
@@ -407,7 +477,7 @@ function pesRender(){
 
 /* ============ TAMPILAN LMS (ADMIN) ============ */
 function tampilanView(){
- const c=ui(),keys=[['dash','Dashboard'],['peserta','Daftar Peserta'],['impor','Impor Excel'],['modul1','Modul 1 – Kode Etik ASN'],['modul2','Modul 2 – Antikorupsi'],['virtual','Virtual / Jadwal'],['soal','Bank Soal'],['kehadiran','Progres Kehadiran'],['progres','Progres Peserta'],['rekap','Rekap Nilai'],['akun','Pengaturan Akun'],['cloud','Cloud & Migrasi'],['tesAwal',L.tesAwal],['mod1',L.mod1],['kuis1',L.kuis1],['vr1',activityLabel('vr1')],['mod2',L.mod2],['kuis2',L.kuis2],['vr2',activityLabel('vr2')],['tesAkhir',L.tesAkhir],['laporan',L.laporan],['profil','Profil']];
+ const c=ui(),keys=[['dash','Dashboard'],['peserta','Daftar Peserta'],['impor','Impor Excel'],['modul1','Modul 1 – Kode Etik ASN'],['modul2','Modul 2 – Antikorupsi'],['virtual','Virtual / Jadwal'],['soal','Bank Soal'],['kehadiran','Progres Kehadiran'],['progres','Progres Peserta'],['rekap','Rekap Nilai'],['akun','Pengaturan Akun'],['cloud','Cloud & Migrasi'],['sertifikat','Sertifikat'],['tesAwal',L.tesAwal],['mod1',L.mod1],['kuis1',L.kuis1],['vr1',activityLabel('vr1')],['mod2',L.mod2],['kuis2',L.kuis2],['vr2',activityLabel('vr2')],['tesAkhir',L.tesAkhir],['laporan',L.laporan],['profil','Profil']];
  return `<div class="card"><h3 style="margin-top:0">Pengaturan Tampilan LMS</h3><p class="muted">Hanya Admin yang dapat mengubah judul dan nama menu. Peserta hanya melihat nama yang sudah ditetapkan.</p>
  <div class="grid"><div><label>Judul LMS (halaman awal)</label><input id="ui_title" value="${esc(c.title)}"></div><div><label>Subjudul halaman awal</label><input id="ui_subtitle" value="${esc(c.subtitle)}"></div><div><label>Nama brand sidebar</label><input id="ui_brand" value="${esc(c.brand)}"></div><div><label>Subjudul brand sidebar</label><input id="ui_brandSub" value="${esc(c.brandSub)}"></div></div>
  <h4>Nama Menu</h4><div class="grid">${keys.map(([k,l])=>`<div><label>${esc(l)}</label><input data-ui-menu="${k}" value="${esc(c.menus[k]||l)}"></div>`).join('')}</div>
@@ -423,10 +493,63 @@ function saveUiSettings(){
 }
 function resetUiSettings(){if(U?.role!=='admin')return;if(!confirm('Kembalikan seluruh judul dan nama menu ke default?'))return;DB.ui={...DEFAULT_UI,menus:{}};save();toast('Tampilan default dipulihkan.','ok');render()}
 
+/* ============ SERTIFIKAT ============ */
+function finalLulus(p){const n=finalScore(p);return n!==null&&n>=80&&n<=100}
+function certMap(){DB.certificates=DB.certificates||{};return DB.certificates}
+function participantCertificateView(p){
+ const c=certMap()[p.username.toLowerCase()]||certMap()[p.id];
+ if(!finalLulus(p)||!c)return `<div class="card"><h3>Sertifikat</h3></div>`;
+ const action=c.data?`<button class="btn" onclick="downloadCertificate('${esc(p.username.toLowerCase())}')">Unduh Sertifikat PDF</button>`:`<a class="btn" href="${esc(c.url)}" target="_blank" rel="noopener">Buka / Unduh Sertifikat</a>`;
+ return `<div class="card"><h3>Sertifikat</h3>${esc(c.name||'')}<div style="margin-top:14px">${action}</div></div>`;
+}
+function downloadCertificate(key){const c=certMap()[key];if(!c?.data){toast('File PDF tidak tersedia.','err');return}const a=document.createElement('a');a.href=c.data;a.download=c.filename||'Sertifikat.pdf';document.body.append(a);a.click();a.remove()}
+function adminCertificatesView(){
+ const P=peserta(),pass=P.filter(finalLulus),cert=certMap();
+ const rows=pass.map(p=>{const c=cert[p.username.toLowerCase()]||cert[p.id];return `<tr><td>${esc(p.nama)}</td><td>${esc(p.username)}</td><td>${finalScore(p)}</td><td>${c?(c.data?'PDF diunggah':`<a target="_blank" rel="noopener" href="${esc(c.url)}">Link sertifikat</a>`):'Belum ada'}</td><td><button class="btn sm s" onclick="certUploadOne('${p.id}')">Upload PDF</button> <button class="btn sm s" onclick="certLinkOne('${p.id}')">Atur Link</button></td></tr>`}).join('');
+ return `<div class="card"><h3>Manajemen Sertifikat</h3><p class="muted">Sertifikat hanya diberikan kepada peserta dengan Nilai Akhir 80–100. ZIP berisi file PDF dengan nama file sesuai username atau nama peserta (tanpa ekstensi .pdf); pencocokan mengabaikan huruf besar/kecil dan tanda baca.</p><div class="grid">${kpi('Peserta Lulus',pass.length)}${kpi('Belum Lulus',P.length-pass.length)}${kpi('Sertifikat tersedia',pass.filter(p=>cert[p.username.toLowerCase()]||cert[p.id]).length)}</div></div>
+ <div class="card"><h3>Upload PDF Individu</h3><p>Pilih peserta lulus dan file PDF sertifikatnya.</p><label>Peserta</label><select id="certOneUser">${pass.map(p=>`<option value="${esc(p.id)}">${esc(p.nama)} — ${esc(p.username)} (${finalScore(p)})</option>`).join('')}</select><label>File sertifikat PDF</label><input id="certOneFile" type="file" accept="application/pdf"><button class="btn" style="margin-top:12px" onclick="uploadOneCert()">Simpan Sertifikat</button></div>
+ <div class="card"><h3>Upload Sertifikat Kolektif (ZIP)</h3><p>Unggah satu file ZIP berisi PDF sertifikat. Nama file harus sesuai dengan <b>username</b> atau <b>nama peserta</b>, contoh <code>maria123.pdf</code> atau <code>Maria Tuarita.pdf</code>. Hanya peserta dengan Nilai Akhir 80–100 yang akan menerima sertifikat. Peserta yang tidak cocok atau belum lulus dilewati.</p><label>File ZIP berisi PDF</label><input id="certZipFile" type="file" accept=".zip,application/zip"><button class="btn" style="margin-top:10px" onclick="importCertZip()">Proses ZIP dan Simpan Sertifikat</button><div id="certZipStatus" class="muted" style="margin-top:10px"></div></div>
+ <div class="card"><h3>Upload Kolektif melalui CSV</h3><p>CSV dengan kolom <code>username,link</code> atau <code>nama,username,link</code>. Baris hanya diterapkan jika peserta cocok dan lulus (Nilai Akhir 80–100).</p><label>Pilih file CSV</label><input id="certCsv" type="file" accept=".csv,text/csv"><button class="btn" style="margin-top:10px" onclick="importCertCsv()">Impor CSV</button></div>
+ <div class="card"><h3>Impor dari Google Sheets</h3><p>Gunakan link CSV publik/terbitkan ke web dari Google Sheets. Kolom wajib: <code>username</code> dan <code>link</code> (URL PDF).</p><label>Link CSV Google Sheets</label><input id="certSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/.../export?format=csv"><button class="btn" style="margin-top:10px" onclick="importCertSheet()">Ambil Data Sheet</button></div>
+ <div class="card"><h3>Daftar Peserta Lulus</h3><div class="tw"><table><tr><th>Nama</th><th>Username</th><th>Nilai Akhir</th><th>Sertifikat</th><th>Aksi</th></tr>${rows||'<tr><td colspan="5" class="empty">Belum ada peserta lulus (80–100).</td></tr>'}</table></div></div>`;
+}
+function certUploadOne(id){const p=DB.users.find(x=>x.id===id);if(!p||!finalLulus(p)){toast('Peserta belum memenuhi syarat lulus (80–100).','err');return}$('#certOneUser').value=id;$('#certOneFile').click()}
+async function uploadOneCert(){const id=$('#certOneUser')?.value,file=$('#certOneFile')?.files?.[0],p=DB.users.find(x=>x.id===id);if(!p||!finalLulus(p)){toast('Peserta belum memenuhi syarat lulus (80–100).','err');return}if(!file||file.type!=='application/pdf'){toast('Pilih file PDF yang valid.','err');return}if(file.size>4*1024*1024){toast('Ukuran PDF maksimal 4 MB agar penyimpanan LMS tidak terlalu besar.','err');return}const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file)});certMap()[p.username.toLowerCase()]={data,filename:file.name,name:file.name,updatedAt:Date.now()};if(save()){toast('Sertifikat berhasil disimpan.','ok');adminRender()}}
+function certNormalize(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\.pdf$/i,'').replace(/[^a-z0-9]/g,'')}
+async function importCertZip(){
+ const input=$('#certZipFile'),file=input?.files?.[0],status=$('#certZipStatus');
+ if(!file){toast('Pilih file ZIP terlebih dahulu.','err');return}
+ if(!window.JSZip){toast('Komponen pembaca ZIP belum termuat. Periksa koneksi internet lalu muat ulang halaman.','err');return}
+ if(status)status.textContent='Membaca ZIP dan mencocokkan nama file…';
+ try{
+  const zip=await JSZip.loadAsync(file),P=peserta(),eligible=P.filter(finalLulus),byUser=new Map(),byName=new Map();
+  eligible.forEach(p=>{const u=certNormalize(p.username),n=certNormalize(p.nama);if(u)byUser.set(u,p);if(n&&!byName.has(n))byName.set(n,p)});
+  let saved=0,skipped=0,notPdf=0;const cert=certMap();
+  for(const entry of Object.values(zip.files)){
+   if(entry.dir||entry.name.startsWith('__MACOSX/')||entry.name.split('/').pop().startsWith('.'))continue;
+   const base=entry.name.split('/').pop();
+   if(!/\.pdf$/i.test(base)){notPdf++;continue}
+   const key=certNormalize(base);let p=byUser.get(key)||byName.get(key);
+   if(!p){skipped++;continue}
+   const blob=await entry.async('blob');
+   if(blob.size>4*1024*1024){skipped++;continue}
+   const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(blob)});
+   cert[p.username.toLowerCase()]={data,filename:base,name:base,updatedAt:Date.now()};saved++;
+  }
+  if(saved===0){if(status)status.textContent=`Tidak ada sertifikat yang cocok. PDF dilewati: ${skipped}; file bukan PDF: ${notPdf}.`;toast('Tidak ada PDF yang cocok dengan username/nama peserta lulus.','err');return}
+  if(save()){if(status)status.textContent=`Selesai: ${saved} sertifikat disimpan; ${skipped} PDF tidak cocok/terlalu besar; ${notPdf} file non-PDF dilewati.`;toast(`${saved} sertifikat disimpan. ${skipped} PDF dilewati.`,'ok');adminRender()}
+ }catch(e){if(status)status.textContent='Gagal membaca ZIP: '+e.message;toast('Gagal membaca file ZIP. Pastikan file ZIP valid.','err')}
+}
+async function importCertCsv(){const f=$('#certCsv')?.files?.[0];if(!f){toast('Pilih file CSV terlebih dahulu.','err');return}applyCertRows(parseCsvCert(await f.text()))}
+function parseCsvCert(text){const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(x=>x.trim());if(!lines.length)return[];const parse=line=>{const out=[];let cur='',q=false;for(let i=0;i<line.length;i++){const c=line[i];if(c==='"'&&line[i+1]==='"'&&q){cur+='"';i++}else if(c==='"')q=!q;else if(c===','&&!q){out.push(cur.trim());cur=''}else cur+=c}out.push(cur.trim());return out};const h=parse(lines.shift()).map(x=>x.toLowerCase());return lines.map(line=>{const a=parse(line),o={};h.forEach((k,i)=>o[k]=a[i]||'');return o})}
+function applyCertRows(rows){let ok=0,skip=0;const cert=certMap();for(const row of rows){const username=String(row.username||row.user||'').trim().toLowerCase(),name=String(row.nama||row.name||'').trim(),url=String(row.link||row.url||row.sertifikat||'').trim();const p=DB.users.find(x=>x.role==='peserta'&&((username&&String(x.username).toLowerCase()===username)||(!username&&name&&String(x.nama).toLowerCase()===name)));if(!p||!finalLulus(p)||!url||!/^https:\/\//i.test(url)){skip++;continue}cert[p.username.toLowerCase()]={url,name:'Sertifikat '+p.nama,updatedAt:Date.now()};ok++}if(save()){toast(`${ok} sertifikat ditautkan; ${skip} baris dilewati (tidak cocok/tidak lulus/link tidak valid).`,'ok');adminRender()}}
+async function importCertSheet(){const url=$('#certSheetUrl').value.trim();if(!url){toast('Masukkan link CSV Google Sheets.','err');return}try{const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);const rows=parseCsvCert(await r.text());if(!rows.length)throw new Error('Sheet kosong atau bukan CSV');applyCertRows(rows)}catch(e){toast('Gagal membaca Google Sheets. Pastikan sheet diterbitkan sebagai CSV dan dapat diakses publik. '+e.message,'err')}}
+function certLinkOne(id){const p=DB.users.find(x=>x.id===id);if(!p||!finalLulus(p)){toast('Peserta belum memenuhi syarat lulus.','err');return}const url=prompt('Masukkan link HTTPS sertifikat PDF:',certMap()[p.username.toLowerCase()]?.url||'');if(!url)return;if(!/^https:\/\//i.test(url)){toast('Link harus HTTPS.','err');return}certMap()[p.username.toLowerCase()]={url,name:'Sertifikat '+p.nama,updatedAt:Date.now()};if(save()){toast('Link sertifikat disimpan.','ok');adminRender()}}
+
 /* ============ ADMIN ============ */
 function adminRender(){
- const nav=[['dash',menuLabel('dash','Dashboard')],['peserta',menuLabel('peserta','Daftar Peserta')],['impor',menuLabel('impor','Impor Excel')],['modul1',menuLabel('modul1','Modul 1 – Kode Etik ASN')],['modul2',menuLabel('modul2','Modul 2 – Antikorupsi')],['virtual',menuLabel('virtual','Virtual / Jadwal')],['soal',menuLabel('soal','Bank Soal')],['kehadiran',menuLabel('kehadiran','Progres Kehadiran')],['progres',menuLabel('progres','Progres Peserta')],['rekap',menuLabel('rekap','Rekap Nilai')],['akun',menuLabel('akun','Pengaturan Akun')],['cloud',menuLabel('cloud','Cloud & Migrasi')],['tampilan','Tampilan LMS']];
- const views={dash:aDash,peserta:aPeserta,impor:aImpor,modul1:()=>aModul(1),modul2:()=>aModul(2),virtual:aVirtual,soal:aSoal,kehadiran:aHadir,progres:aProgres,rekap:aRekap,akun:akunView,cloud:cloudMigrationView,tampilan:tampilanView};
+ const nav=[['dash',menuLabel('dash','Dashboard')],['peserta',menuLabel('peserta','Daftar Peserta')],['impor',menuLabel('impor','Impor Excel')],['modul1',menuLabel('modul1','Modul 1 – Kode Etik ASN')],['modul2',menuLabel('modul2','Modul 2 – Antikorupsi')],['virtual',menuLabel('virtual','Virtual / Jadwal')],['soal',menuLabel('soal','Bank Soal')],['kehadiran',menuLabel('kehadiran','Progres Kehadiran')],['progres',menuLabel('progres','Progres Peserta')],['rekap',menuLabel('rekap','Rekap Nilai')],['akun',menuLabel('akun','Pengaturan Akun')],['cloud',menuLabel('cloud','Cloud & Migrasi')],['sertifikat',menuLabel('sertifikat','Sertifikat')],['tampilan','Tampilan LMS']];
+ const views={dash:aDash,peserta:aPeserta,impor:aImpor,modul1:()=>aModul(1),modul2:()=>aModul(2),virtual:aVirtual,soal:aSoal,kehadiran:aHadir,progres:aProgres,rekap:aRekap,akun:akunView,cloud:cloudMigrationView,sertifikat:adminCertificatesView,tampilan:tampilanView};
  if(!views[S.v])S.v='dash';
  $('#app').innerHTML=shell(nav,views[S.v]());
  if(S.v==='peserta')drawPT();
@@ -436,9 +559,10 @@ const avg=a=>a.length?Math.round(a.reduce((x,y)=>x+y,0)/a.length*10)/10:0;
 function aDash(){
  const P=peserta();let b=0,a=0,s=0;
  P.forEach(p=>{const d=doneCount(p);if(!d)b++;else if(isDone(p,'tesAkhir'))s++;else a++});
+ const lulus=P.filter(p=>(finalScore(p)??-1)>=80).length, belumLulus=P.length-lulus;
  const fin=P.map(finalScore).filter(x=>x!=null),tk=P.filter(p=>p.ex?.tesAkhir?.done).map(p=>p.ex.tesAkhir.score);
  const bars=STEPS.map(s=>{const c=P.filter(p=>isDone(p,s)).length,w=P.length?Math.round(c/P.length*100):0;return `<div style="margin:9px 0"><div class="row" style="justify-content:space-between"><span>${L[s]}</span><b>${c}</b></div><div class="bar"><i style="width:${w}%"></i></div></div>`}).join('');
- return `<div class="grid">${kpi('Total Peserta',P.length)}${kpi('Peserta Aktif',P.length-b)}${kpi('Belum Mulai',b)}${kpi('Sedang Mengikuti',a)}${kpi('Peserta Selesai',s)}${kpi('Rata-rata Kehadiran',avg(P.map(attPct))+'%')}${kpi('Rata-rata Tes Akhir',avg(tk))}${kpi('Rata-rata Nilai Akhir',avg(fin))}</div>
+ return `<div class="grid">${kpi('Total Peserta',P.length)}${kpi('Peserta Aktif',P.length-b)}${kpi('Belum Mulai',b)}${kpi('Sedang Mengikuti',a)}${kpi('Peserta Selesai',s)}${kpi('Lulus (Nilai 80–100)',lulus)}${kpi('Belum Lulus',belumLulus)}${kpi('Rata-rata Kehadiran',avg(P.map(attPct))+'%')}${kpi('Rata-rata Tes Akhir',avg(tk))}${kpi('Rata-rata Nilai Akhir',avg(fin))}</div>
  <div class="card" style="margin-top:16px"><b>Penyelesaian per Kegiatan</b>${bars}</div>`;
 }
 function aPeserta(){
@@ -521,6 +645,31 @@ async function doReset(id){const v=$('#rp').value,p=DB.users.find(x=>x.id===id);
  try{if(CLOUD_TOKEN&&U?.role==='admin')await cloudRequest('lms-data',{action:'reset-password',username:p.username,password:v});
   p.pass=await mkPass(v);p.fail=0;p.lock=0;save();closeM();toast('Password peserta berhasil direset. Jika akun sudah migrasi cloud, password Auth ikut diperbarui.','ok');drawPT()
  }catch(err){$('#re').textContent='Reset cloud gagal: '+err.message+' Data lokal belum diubah.';}}
+async function toggleParticipantLock(id){
+ if(U?.role!=='admin'){toast('Hanya Admin yang dapat mengubah akses peserta.','err');return}
+ const p=DB.users.find(x=>x.id===id&&x.role==='peserta');if(!p)return;
+ p.adminLocked=!p.adminLocked;p.adminLockUpdatedAt=now();p.adminLockUpdatedBy=U?.username||'admin';
+ p.logs=p.logs||[];p.logs.push({t:now(),a:p.adminLocked?'Admin mengunci akses peserta':'Admin membuka kunci akses peserta'});
+ const msg=p.adminLocked?'Akses peserta dikunci.':'Kunci peserta dibuka.';await persistAdminControl(msg);detail(id)
+}
+async function adjustExamTime(id,k){
+ if(U?.role!=='admin'){toast('Hanya Admin yang dapat mengatur waktu ujian.','err');return}
+ const p=DB.users.find(x=>x.id===id&&x.role==='peserta');if(!p)return;
+ p.examDurationMs=p.examDurationMs||{};
+ const e=p.ex?.[k];
+ if(e?.done){toast(L[k]+' sudah dikirim dan dinilai. Untuk menjaga integritas nilai, percobaan yang sudah selesai tidak dibuka ulang. Admin masih dapat mengatur durasi untuk percobaan berikutnya jika fitur pengulangan diaktifkan.','warn');return}
+ const currentDuration=Math.round((Number(e?.durationMs)||Number(p.examDurationMs[k])||EXAM_MS)/60000);
+ const remaining=e?Math.max(0,Math.ceil((examDeadline(e)-now())/60000)):currentDuration;
+ const v=prompt((e?'Sisa waktu baru':'Durasi ujian saat mulai')+' untuk '+L[k]+' (menit). Berlaku untuk peserta yang belum mulai, sedang ujian, atau waktunya habis tetapi belum dikirim. Masukkan 1–240 menit. Jawaban tersimpan tidak dihapus.',String(Math.max(1,remaining)));
+ if(v===null)return;const mins=Number(v);if(!Number.isInteger(mins)||mins<1||mins>240){toast('Masukkan bilangan bulat antara 1 dan 240 menit.','err');return}
+ const stamp=now();
+ // Simpan durasi default bagi peserta yang belum memulai.
+ p.examDurationMs[k]=mins*60000;
+ // Jika ujian sudah dimulai namun belum dikirim, perbarui deadline absolut dari saat ini.
+ if(e){e.durationMs=mins*60000;e.deadlineOverride=stamp+mins*60000;e.timeAdjustedAt=stamp;e.timeAdjustedBy=U?.username||'admin';e.submitFailed=false;e.submitting=false;e.done=false;}
+ p.logs=p.logs||[];p.logs.push({t:stamp,a:`Admin mengatur ${e?'sisa waktu':'durasi awal'} ${L[k]} menjadi ${mins} menit`});
+ await persistAdminControl('Pengaturan waktu '+L[k]+' disimpan ('+(e?'sisa waktu':'durasi awal')+' '+mins+' menit).');detail(id)
+}
 function detail(id){
  const p=DB.users.find(x=>x.id===id),fs=finalScore(p);
  const info=s=>{const e=p.ex?.[s];if(e)return[e.end,e.done?'Nilai '+e.score+' · pindah tab '+(e.tabs||0)+'x':'Sedang dikerjakan'];
@@ -531,6 +680,8 @@ function detail(id){
  modal(`<h3 style="margin-top:0">${esc(p.nama)}</h3><div class="muted">${esc(p.jabatan||'-')} · ${esc(p.instansi)} · ${esc(p.kab)} · ${esc(p.prov)} · @${esc(p.username)}</div>
  <div class="tw" style="margin-top:12px"><table><tr><th>Kegiatan</th><th>Status</th><th>Waktu Terakhir</th><th>Keterangan</th></tr>${STEPS.map(s=>{const i=info(s);return `<tr><td>${L[s]}</td><td>${isDone(p,s)?'🟢 Selesai':unlocked(p,s)?'🟡 Berlangsung':'🔒 Terkunci'}</td><td>${fmt(i[0])}</td><td>${esc(i[1])}</td></tr>`}).join('')}</table></div>
  <p><b>Progres:</b> ${prog(p)}% · <b>Kehadiran:</b> ${attPct(p)}% · <b>Nilai Akhir:</b> ${fs??'-'}</p>
+ <div class="card" style="margin-top:12px"><h4 style="margin-top:0">Kontrol Admin</h4><p>Status akses: <b>${p.adminLocked?'Dikunci Admin':'Aktif'}</b></p><div class="row" style="flex-wrap:wrap"><button class="btn ${p.adminLocked?'g':'d'}" onclick="toggleParticipantLock('${id}')">${p.adminLocked?'Buka Kunci Peserta':'Kunci Peserta'}</button><button class="btn s" onclick="adjustExamTime('${id}','tesAwal')">Atur Waktu Tes Awal</button><button class="btn s" onclick="adjustExamTime('${id}','tesAkhir')">Atur Waktu Tes Akhir</button></div><p class="muted">Berlaku untuk peserta yang belum ujian (durasi awal), sedang ujian (sisa waktu), atau waktunya habis tetapi belum dikirim. Jawaban tersimpan tidak dihapus. Ujian yang sudah dikirim dan dinilai tidak dibuka ulang.</p></div>
+ <div class="card" style="margin-top:12px"><h4 style="margin-top:0">Akses Menu Belajar Peserta</h4><p class="muted">Peserta baru mengikuti aturan otomatis LMS. Anda dapat mengatur akses khusus per menu; gunakan tombol berikut untuk mengembalikan peserta ini ke aturan otomatis tanpa menghapus progres atau data.</p><button class="btn s sm" onclick="resetParticipantMenuAccess('${id}')">Kembalikan ke Aturan LMS Otomatis</button><div class="grid" style="margin-top:10px">${ORDER.map(st=>{const explicit=Object.prototype.hasOwnProperty.call(p.menuAccess||{},st);const open=explicit?p.menuAccess[st]:unlocked(p,st);return `<div class="row" style="justify-content:space-between;gap:8px;border:1px solid var(--line);padding:8px;border-radius:8px"><span>${esc(L[st])}<small class="muted" style="display:block">${explicit?'Pengaturan Admin':'Aturan LMS'}</small></span><button class="btn ${open?'d':'g'} s" onclick="toggleParticipantMenu('${id}','${st}')">${open?'Kunci Menu':'Buka Menu'}</button></div>`}).join('')}</div></div>
  <b>Riwayat Aktivitas Terbaru</b><div class="tw"><table>${(p.logs||[]).slice(-20).reverse().map(l=>`<tr><td>${fmt(l.t)}</td><td>${esc(l.a)}</td></tr>`).join('')||'<tr><td>Belum ada aktivitas</td></tr>'}</table></div>
  <div style="text-align:right;margin-top:12px"><button class="btn s" onclick="closeM()">Tutup</button></div>`);
 }
@@ -684,8 +835,8 @@ function aProgres(){
 function aRekap(){
  const P=peserta();
  return `<div class="card"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Rekap Nilai</h3><button class="btn s" onclick="exportCSV()">Export CSV</button></div><p class="muted">Nilai Akhir = 25% Kehadiran + 75% Tes Akhir. Tes Awal tidak masuk rumus.</p></div>
- <div class="card tw"><table><tr><th>Nama</th><th>Jabatan</th><th>Instansi</th><th>Kab/Kota</th><th>Provinsi</th><th>Tes Awal</th><th>Kuis 1</th><th>Kehadiran</th><th>Kuis 2</th><th>Tes Akhir</th><th>Nilai Akhir</th></tr>
- ${P.map(p=>`<tr><td>${esc(p.nama)}</td><td>${esc(p.jabatan||'-')}</td><td>${esc(p.instansi)}</td><td>${esc(p.kab)}</td><td>${esc(p.prov)}</td><td>${sc(p.ex?.tesAwal)}</td><td>${best(p,'kuis1')}</td><td>${attPct(p)}</td><td>${best(p,'kuis2')}</td><td>${sc(p.ex?.tesAkhir)}</td><td><b>${finalScore(p)??'-'}</b></td></tr>`).join('')||'<tr><td colspan="11" class="empty">Belum ada peserta</td></tr>'}</table></div>`;
+ <div class="card tw"><table><tr><th>Nama</th><th>Jabatan</th><th>Instansi</th><th>Kab/Kota</th><th>Provinsi</th><th>Tes Awal</th><th>Kuis 1</th><th>Kehadiran</th><th>Kuis 2</th><th>Tes Akhir</th><th>Nilai Akhir</th><th>Keterangan</th></tr>
+ ${P.map(p=>{const n=finalScore(p),ket=n===null?'Belum Lulus':(n>=80&&n<=100?'Lulus':'Belum Lulus');return `<tr><td>${esc(p.nama)}</td><td>${esc(p.jabatan||'-')}</td><td>${esc(p.instansi)}</td><td>${esc(p.kab)}</td><td>${esc(p.prov)}</td><td>${sc(p.ex?.tesAwal)}</td><td>${best(p,'kuis1')}</td><td>${attPct(p)}</td><td>${best(p,'kuis2')}</td><td>${sc(p.ex?.tesAkhir)}</td><td><b>${n??'-'}</b></td><td><span class="badge ${ket==='Lulus'?'bg-ok':'bg-w'}">${ket}</span></td></tr>`}).join('')||'<tr><td colspan="12" class="empty">Belum ada peserta</td></tr>'}</table></div>`;
 }
 function exportCSV(){
  const h=['Nama','Jabatan','Instansi','Kab/Kota','Provinsi','TesAwal','Kuis1','Kehadiran','Kuis2','TesAkhir','NilaiAkhir'];
@@ -746,27 +897,6 @@ function restoreLegacySnapshot(inp){
 /* ============ START ============ */
 async function initApp(){
  load();
- // Load only public display settings from cloud before showing the login landing page.
- // If the cloud is unavailable, the existing local/default settings remain as fallback.
- try{
-  const publicConfig=await cloudRequest('lms-data',{action:'public-config'},null);
-  if(publicConfig?.ui){
-   DB.ui=DB.ui||{};
-   for(const key of ['title','subtitle','brand','brandSub']){
-    if(typeof publicConfig.ui[key]==='string'&&publicConfig.ui[key].trim())DB.ui[key]=publicConfig.ui[key];
-   }
-  }
-  if(publicConfig?.sched){
-   DB.sched=DB.sched||{};
-   for(const key of ['vr1','vr2']){
-    if(typeof publicConfig.sched[key]?.title==='string'&&publicConfig.sched[key].title.trim()){
-     DB.sched[key]=DB.sched[key]||{};
-     DB.sched[key].title=publicConfig.sched[key].title;
-    }
-   }
-  }
-  try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){}
- }catch(e){console.warn('Pengaturan tampilan cloud belum dapat dimuat sebelum login:',e)}
  let token=null;try{token=sessionStorage.getItem(CK)}catch(e){}
  if(token){
   try{
