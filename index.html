@@ -121,7 +121,7 @@ let DB=null,U=null,S={v:'dash',pf:{q:'',ins:'',kab:'',prov:'',st:'',pr:'',nl:'',
 function load(){
  try{DB=JSON.parse(localStorage.getItem(KEY))}catch(e){DB=null}
  if(!DB||!DB.users)DB={users:[{id:'admin',username:'admin',role:'admin',nama:'Administrator',pass:{s:'Lzoy3N+v98c63/dFgN6/cg==',h:'sWxBIvk1dCIZZVRS2ecmSmW15LbdSFLp9+yKskAiepc='},fail:0,lock:0}],mods:{1:[],2:[]},sched:{},q:{tesAwal:[],kuis1:[],kuis2:[],tesAkhir:[]}};
- DB.mods=DB.mods||{1:[],2:[]};DB.sched=DB.sched||{};DB.q=DB.q||{};DB.ui=DB.ui||{menus:{}};
+ DB.mods=DB.mods||{1:[],2:[]};DB.sched=DB.sched||{};DB.q=DB.q||{};DB.ui=DB.ui||{menus:{}};DB.examScheduleGlobal=DB.examScheduleGlobal||{};
  let sid=null;try{sid=sessionStorage.getItem(SK)}catch(e){}
  U=DB.users.find(x=>x.id===sid)||null;
 }
@@ -206,7 +206,11 @@ window.setPg=(k,n)=>{if(k==='peserta'){S.pf.pg=n;drawPT()}else{S.kf.pg=n;drawHD(
 function ansE(i,o){const k=S.exam;if(!k||!U.ex[k]||U.ex[k].done)return;U.ex[k].ans[i]=o;save()}
 function ansQ(i,o){const k=S.qk;if(!k)return;S.qa[k]=S.qa[k]||{};S.qa[k][i]=o}
 function examDeadline(e){return Number.isFinite(e?.deadlineOverride)?e.deadlineOverride:(e?.start||0)+(Number.isFinite(e?.durationMs)?e.durationMs:(Number(U?.examDurationMs?.[S.exam])||EXAM_MS))}
-function startExam(k){U.ex=U.ex||{};U.ex[k]={start:now(),ans:{},tabs:0,done:false,durationMs:Number(U.examDurationMs?.[k])||EXAM_MS};save();log('Mulai '+L[k]);try{document.documentElement.requestFullscreen?.().catch(()=>{})}catch(e){}toast('Ujian dimulai. Timer berjalan.','ok');render()}
+function effectiveExamSchedule(p,k){return (p?.examSchedule&&Object.prototype.hasOwnProperty.call(p.examSchedule,k))?p.examSchedule[k]:(DB.examScheduleGlobal?.[k]||{});}
+function scheduleWindow(p,k){const x=effectiveExamSchedule(p,k)||{};if(!x.date||!x.startTime||!x.endTime)return {state:'open',text:'Jadwal belum membatasi akses'};const a=new Date(x.date+'T'+x.startTime+':00').getTime(),b=new Date(x.date+'T'+x.endTime+':00').getTime(),n=now();if(!Number.isFinite(a)||!Number.isFinite(b)||b<=a)return {state:'invalid',text:'Jadwal belum valid'};if(n<a)return {state:'early',text:'Ujian dibuka '+x.date+' pukul '+x.startTime};if(n>b)return {state:'late',text:'Waktu akses berakhir '+x.date+' pukul '+x.endTime};return {state:'open',text:'Ujian dibuka sampai pukul '+x.endTime};}
+function examScheduleForm(id,k){const p=id?DB.users.find(x=>x.id===id):null;const x=(id?(p?.examSchedule?.[k]||{}):(DB.examScheduleGlobal?.[k]||{}));const label=id?('Peserta '+(p?.nama||'')):'Semua peserta';modal(`<h3 style="margin-top:0">Jadwal ${esc(L[k])}</h3><p class="muted">${esc(label)}. Jadwal khusus peserta mengesampingkan jadwal semua peserta. Kosongkan semua kolom untuk menghapus batas jadwal.</p><label>Tanggal</label><input id="esDate" type="date" value="${esc(x.date||'')}"><div class="grid"><div><label>Waktu mulai</label><input id="esStart" type="time" value="${esc(x.startTime||'')}"></div><div><label>Waktu selesai</label><input id="esEnd" type="time" value="${esc(x.endTime||'')}"></div></div><p class="muted">Menggunakan waktu lokal perangkat. Jadwal hanya mengatur kapan ujian dapat dimulai; percobaan aktif dan jawaban tersimpan tidak diubah.</p><div class="row" style="justify-content:flex-end"><button class="btn s" onclick="closeM()">Batal</button><button class="btn" onclick="saveExamSchedule('${id||''}','${k}')">Simpan Jadwal</button></div>`)}
+window.saveExamSchedule=async function(id,k){const date=$('#esDate').value,startTime=$('#esStart').value,endTime=$('#esEnd').value;if((date||startTime||endTime)&&(!date||!startTime||!endTime)){toast('Isi tanggal, waktu mulai, dan waktu selesai, atau kosongkan semuanya.','err');return}if(date&&endTime<=startTime){toast('Waktu selesai harus setelah waktu mulai pada tanggal yang sama.','err');return}const x=date?{date,startTime,endTime}:{};if(id){const p=DB.users.find(z=>z.id===id);if(!p)return;p.examSchedule=p.examSchedule||{};p.examSchedule[k]=x;}else{DB.examScheduleGlobal=DB.examScheduleGlobal||{};DB.examScheduleGlobal[k]=x;}const ok=await persistAdminControl('Jadwal '+L[k]+' disimpan');if(ok){closeM();if(id)detail(id);else if(S.v==='dash')adminRender();}};
+function startExam(k){const existing=U.ex?.[k];if(!existing||existing.done){const w=scheduleWindow(U,k);if(w.state!=='open'){toast(w.text+'. Ujian belum dapat dimulai.','warn');return}}U.ex=U.ex||{};U.ex[k]={start:now(),ans:{},tabs:0,done:false,durationMs:Number(U.examDurationMs?.[k])||EXAM_MS};save();log('Mulai '+L[k]);try{document.documentElement.requestFullscreen?.().catch(()=>{})}catch(e){}toast('Ujian dimulai. Timer berjalan.','ok');render()}
 async function submitExam(k,auto){
  const e=U.ex?.[k];if(!e||e.done||e.submitting||e.submitFailed)return;
  const expired=now()>=examDeadline(e);
@@ -228,7 +232,13 @@ window.addEventListener('blur',focusLost);
 document.addEventListener('visibilitychange',()=>{if(document.hidden)focusLost()});
 setInterval(()=>{
  if(!U||U.role!=='peserta')return;
- if(S.exam){const e=U.ex?.[S.exam];const el=$('#tmr');if(el&&e)el.textContent=fmtLeft(examDeadline(e)-now())}
+ if(S.exam){
+  const k=S.exam,e=U.ex?.[k];
+  const el=$('#tmr');
+  if(el&&e)el.textContent=fmtLeft(examDeadline(e)-now());
+  // Saat waktu habis, jangan kirim otomatis atau memunculkan notifikasi berulang.
+  // Peserta menekan tombol Kirim Jawaban untuk memulai pengiriman satu kali.
+ }
 },1000);
 // Ambil perubahan kontrol Admin dari cloud secara berkala pada sesi peserta.
 // Ini membuat penambahan waktu dan kunci/buka kunci berlaku tanpa login ulang.
@@ -277,7 +287,7 @@ function examView(k){
  S.exam=k;
  return `<div class="card"><div class="row" style="justify-content:space-between"><b>${L[k]}</b><span class="timer" id="tmr">${fmtLeft(examDeadline(e)-now())}</span></div>${examExpired?'<div class="err">Waktu ujian telah habis</div>':''}<div class="muted">Pindah tab: <span id="tabs">${e.tabs||0}</span>x · Jawaban tersimpan otomatis</div></div>`+
  qs.slice(0,EXAM_N).map((q,i)=>qCard(q,i,e.ans[i],'ansE')).join('')+
- `<div class="card"><button class="btn g" onclick="if(!${examExpired} && Object.keys(U.ex?.['${k}']?.ans||{}).length < (DB.q['${k}']||[]).slice(0,EXAM_N).length){toast('Masih ada soal yang belum dijawab. Lengkapi semua jawaban sebelum mengirim.','warn')}else if(confirm('Kirim jawaban sekarang?')){if(${examExpired})toast('Waktu ujian telah habis','warn');submitExam('${k}',${examExpired})}">Kirim Jawaban</button></div>`;
+ `<div class="card"><button class="btn g" onclick="if(!${examExpired} && Object.keys(U.ex?.['${k}']?.ans||{}).length < (DB.q['${k}']||[]).slice(0,EXAM_N).length){toast('Masih ada soal yang belum dijawab. Lengkapi semua jawaban sebelum mengirim.','warn')}else if(confirm('Kirim jawaban sekarang?')){submitExam('${k}',${examExpired})}">Kirim Jawaban</button></div>`;
 }
 function quizView(k){
  if(!unlocked(U,k))return lockCard(k);
@@ -563,6 +573,7 @@ function aDash(){
  const fin=P.map(finalScore).filter(x=>x!=null),tk=P.filter(p=>p.ex?.tesAkhir?.done).map(p=>p.ex.tesAkhir.score);
  const bars=STEPS.map(s=>{const c=P.filter(p=>isDone(p,s)).length,w=P.length?Math.round(c/P.length*100):0;return `<div style="margin:9px 0"><div class="row" style="justify-content:space-between"><span>${L[s]}</span><b>${c}</b></div><div class="bar"><i style="width:${w}%"></i></div></div>`}).join('');
  return `<div class="grid">${kpi('Total Peserta',P.length)}${kpi('Peserta Aktif',P.length-b)}${kpi('Belum Mulai',b)}${kpi('Sedang Mengikuti',a)}${kpi('Peserta Selesai',s)}${kpi('Lulus (Nilai 80–100)',lulus)}${kpi('Belum Lulus',belumLulus)}${kpi('Rata-rata Kehadiran',avg(P.map(attPct))+'%')}${kpi('Rata-rata Tes Akhir',avg(tk))}${kpi('Rata-rata Nilai Akhir',avg(fin))}</div>
+ <div class="card" style="margin-top:16px"><h3 style="margin-top:0">Atur Tanggal dan Waktu Ujian</h3><p class="muted">Jadwal global berlaku untuk semua peserta, kecuali peserta yang memiliki jadwal khusus. Pengaturan ini tidak menghapus jawaban atau nilai.</p><div class="row" style="flex-wrap:wrap"><button class="btn" onclick="examScheduleForm(null,'tesAwal')">Jadwal Tes Awal</button><button class="btn" onclick="examScheduleForm(null,'tesAkhir')">Jadwal Tes Akhir</button></div><div class="grid" style="margin-top:12px">${['tesAwal','tesAkhir'].map(k=>{const x=DB.examScheduleGlobal?.[k];return `<div><b>${L[k]}</b><div class="muted">${x?.date&&x?.startTime&&x?.endTime?esc(x.date+' · '+x.startTime+'–'+x.endTime):'Belum dijadwalkan'}</div></div>`}).join('')}</div></div>
  <div class="card" style="margin-top:16px"><b>Penyelesaian per Kegiatan</b>${bars}</div>`;
 }
 function aPeserta(){
@@ -680,7 +691,7 @@ function detail(id){
  modal(`<h3 style="margin-top:0">${esc(p.nama)}</h3><div class="muted">${esc(p.jabatan||'-')} · ${esc(p.instansi)} · ${esc(p.kab)} · ${esc(p.prov)} · @${esc(p.username)}</div>
  <div class="tw" style="margin-top:12px"><table><tr><th>Kegiatan</th><th>Status</th><th>Waktu Terakhir</th><th>Keterangan</th></tr>${STEPS.map(s=>{const i=info(s);return `<tr><td>${L[s]}</td><td>${isDone(p,s)?'🟢 Selesai':unlocked(p,s)?'🟡 Berlangsung':'🔒 Terkunci'}</td><td>${fmt(i[0])}</td><td>${esc(i[1])}</td></tr>`}).join('')}</table></div>
  <p><b>Progres:</b> ${prog(p)}% · <b>Kehadiran:</b> ${attPct(p)}% · <b>Nilai Akhir:</b> ${fs??'-'}</p>
- <div class="card" style="margin-top:12px"><h4 style="margin-top:0">Kontrol Admin</h4><p>Status akses: <b>${p.adminLocked?'Dikunci Admin':'Aktif'}</b></p><div class="row" style="flex-wrap:wrap"><button class="btn ${p.adminLocked?'g':'d'}" onclick="toggleParticipantLock('${id}')">${p.adminLocked?'Buka Kunci Peserta':'Kunci Peserta'}</button><button class="btn s" onclick="adjustExamTime('${id}','tesAwal')">Atur Waktu Tes Awal</button><button class="btn s" onclick="adjustExamTime('${id}','tesAkhir')">Atur Waktu Tes Akhir</button></div><p class="muted">Berlaku untuk peserta yang belum ujian (durasi awal), sedang ujian (sisa waktu), atau waktunya habis tetapi belum dikirim. Jawaban tersimpan tidak dihapus. Ujian yang sudah dikirim dan dinilai tidak dibuka ulang.</p></div>
+ <div class="card" style="margin-top:12px"><h4 style="margin-top:0">Kontrol Admin</h4><p>Status akses: <b>${p.adminLocked?'Dikunci Admin':'Aktif'}</b></p><div class="row" style="flex-wrap:wrap"><button class="btn ${p.adminLocked?'g':'d'}" onclick="toggleParticipantLock('${id}')">${p.adminLocked?'Buka Kunci Peserta':'Kunci Peserta'}</button><button class="btn s" onclick="adjustExamTime('${id}','tesAwal')">Atur Waktu Tes Awal</button><button class="btn s" onclick="adjustExamTime('${id}','tesAkhir')">Atur Waktu Tes Akhir</button><button class="btn s" onclick="examScheduleForm('${id}','tesAwal')">Jadwal Tes Awal</button><button class="btn s" onclick="examScheduleForm('${id}','tesAkhir')">Jadwal Tes Akhir</button></div><p class="muted">Berlaku untuk peserta yang belum ujian (durasi awal), sedang ujian (sisa waktu), atau waktunya habis tetapi belum dikirim. Jawaban tersimpan tidak dihapus. Ujian yang sudah dikirim dan dinilai tidak dibuka ulang.</p></div>
  <div class="card" style="margin-top:12px"><h4 style="margin-top:0">Akses Menu Belajar Peserta</h4><p class="muted">Peserta baru mengikuti aturan otomatis LMS. Anda dapat mengatur akses khusus per menu; gunakan tombol berikut untuk mengembalikan peserta ini ke aturan otomatis tanpa menghapus progres atau data.</p><button class="btn s sm" onclick="resetParticipantMenuAccess('${id}')">Kembalikan ke Aturan LMS Otomatis</button><div class="grid" style="margin-top:10px">${ORDER.map(st=>{const explicit=Object.prototype.hasOwnProperty.call(p.menuAccess||{},st);const open=explicit?p.menuAccess[st]:unlocked(p,st);return `<div class="row" style="justify-content:space-between;gap:8px;border:1px solid var(--line);padding:8px;border-radius:8px"><span>${esc(L[st])}<small class="muted" style="display:block">${explicit?'Pengaturan Admin':'Aturan LMS'}</small></span><button class="btn ${open?'d':'g'} s" onclick="toggleParticipantMenu('${id}','${st}')">${open?'Kunci Menu':'Buka Menu'}</button></div>`}).join('')}</div></div>
  <b>Riwayat Aktivitas Terbaru</b><div class="tw"><table>${(p.logs||[]).slice(-20).reverse().map(l=>`<tr><td>${fmt(l.t)}</td><td>${esc(l.a)}</td></tr>`).join('')||'<tr><td>Belum ada aktivitas</td></tr>'}</table></div>
  <div style="text-align:right;margin-top:12px"><button class="btn s" onclick="closeM()">Tutup</button></div>`);
