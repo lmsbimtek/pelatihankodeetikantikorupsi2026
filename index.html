@@ -294,25 +294,47 @@ function examView(k){
 }
 function quizView(k){
  if(!unlocked(U,k))return lockCard(k);
- const z=U.kz?.[k]||{att:[],lulus:false},qs=(DB.q[k]||[]).slice(0,QUIZ_N);
- const hist=z.att.length?`<div class="muted" style="margin-top:6px">Riwayat: ${z.att.map((a,i)=>`Percobaan ${i+1}: ${a.s} (${fmt(a.t)})`).join(' · ')}</div>`:'';
- if(z.lulus)return `<div class="card"><span class="badge bg-ok">🟢 Selesai – Lulus (100)</span><p>Anda telah mencapai nilai 100.</p>${hist}</div>`;
- if(qs.length<QUIZ_N)return `<div class="card"><div class="err">Bank soal kuis belum lengkap (${qs.length}/${QUIZ_N}). Hubungi Admin.</div></div>`;
+ const z=U.kz?.[k]||{att:[],lulus:false},qs=(DB.q[k]||[]).slice(0,QUIZ_N),passed=!!z.lulus;
+ const hist=z.att.length?`<div class="muted" style="margin-top:6px">Riwayat resmi: ${z.att.map((a,i)=>`Percobaan ${i+1}: ${a.s} (${fmt(a.t)})`).join(' · ')}</div>`:'';
+ if(qs.length<QUIZ_N)return `<div class="card">${passed?'<span class="badge bg-ok">🟢 Selesai – Lulus (100)</span>':''}<div class="err">Bank soal kuis belum lengkap (${qs.length}/${QUIZ_N}). Hubungi Admin.</div></div>`;
  S.qk=k;S.qa=S.qa||{};S.qa[k]=S.qa[k]||{};
- return `<div class="card"><b>${L[k]}</b> <span class="badge bg-w">Belum lulus – nilai wajib 100</span><div class="muted" style="margin-top:6px">${QUIZ_N} soal pilihan ganda. Jika belum mencapai 100, Anda dapat mengulang.</div>${hist}</div>`+
+ const practice=S.practiceScore?.[k];
+ const statusCard=passed
+  ? `<div class="card"><span class="badge bg-ok">🟢 Selesai – Lulus (100)</span><p>Anda telah mencapai nilai 100.</p><p class="muted">Soal ditampilkan kembali untuk latihan persiapan Tes Akhir. Nilai latihan tidak mengubah nilai kelulusan resmi atau riwayat percobaan.</p>${practice?`<div class="muted">Hasil latihan terakhir: <b>${practice.score}</b> (${fmt(practice.t)}). Kelulusan resmi tetap 100.</div>`:''}${hist}</div>`
+  : `<div class="card"><b>${L[k]}</b> <span class="badge bg-w">Belum lulus – nilai wajib 100</span><div class="muted" style="margin-top:6px">${QUIZ_N} soal pilihan ganda. Jika belum mencapai 100, Anda dapat mengulang.</div>${hist}</div>`;
+ return statusCard+
  qs.map((q,i)=>qCard(q,i,S.qa[k][i],'ansQ')).join('')+
- `<div class="card"><button class="btn g" onclick="submitQuiz('${k}')">Kirim Kuis</button></div>`;
+ `<div class="card"><button class="btn g" onclick="submitQuiz('${k}',${passed?'true':'false'})">${passed?'Periksa Jawaban Latihan':'Kirim Kuis'}</button></div>`;
 }
-async function submitQuiz(k){
- const qs=(DB.q[k]||[]).slice(0,QUIZ_N),a=S.qa?.[k]||{};
+async function submitQuiz(k,practice=false){
+ const qs=(DB.q[k]||[]).slice(0,QUIZ_N),a=S.qa?.[k]||{},passed=!!U.kz?.[k]?.lulus;
+ if(practice&&!passed){toast('Mode latihan ulang hanya tersedia setelah kuis lulus resmi.','warn');render();return}
+ if(passed&&!practice){toast('Kuis ini sudah lulus. Gunakan soal di bawah untuk latihan; nilai resmi tetap 100.','ok');render();return}
  if(Object.keys(a).length<qs.length){toast('Jawab semua soal terlebih dahulu.','warn');return}
+ let cloudGradeLock=false;
  try{
   let score;
-  if(U.cloudAuth){const result=await cloudRequest('lms-data',{action:'grade',assessmentKey:k,answers:a});score=result.score;Object.assign(U,result.user||{});}
-  else{score=Math.round(qs.filter((q,i)=>a[i]===q.k).length/qs.length*100);U.kz=U.kz||{};const z=U.kz[k]=U.kz[k]||{att:[],lulus:false};z.att.push({s:score,t:now()});z.lt=now();if(score===100)z.lulus=true;}
-  if(score===100)toast('Selamat! Nilai 100. Kegiatan berikutnya telah terbuka.','ok');else toast(`Nilai ${score}. Belum mencapai 100, silakan ulangi kuis.`,'warn');
-  S.qa[k]={};save();log(`${L[k]} nilai ${score}`);render();
- }catch(err){toast('Kuis belum berhasil dikirim: '+err.message,'err')}
+  if(U.cloudAuth){
+   // Avoid a concurrent autosave or background cloud poll replacing the fresh score/status.
+   clearTimeout(CLOUD_TIMER);
+   while(CLOUD_BUSY||CLOUD_POLL_BUSY)await new Promise(r=>setTimeout(r,120));
+   CLOUD_BUSY=true;cloudGradeLock=true;
+   const result=await cloudRequest('lms-data',{action:'grade',assessmentKey:k,answers:a,practice:!!practice});
+   score=result.score;
+   if(result.user)Object.assign(U,result.user);
+  }else{
+   score=Math.round(qs.filter((q,i)=>a[i]===q.k).length/qs.length*100);
+   if(!practice){U.kz=U.kz||{};const z=U.kz[k]=U.kz[k]||{att:[],lulus:false};z.att.push({s:score,t:now()});z.lt=now();if(score===100)z.lulus=true;}
+  }
+  if(practice){S.practiceScore=S.practiceScore||{};S.practiceScore[k]={score,t:now()};toast(`Nilai latihan ${score}. Kelulusan resmi tetap 100 dan riwayat resmi tidak berubah.` ,score===100?'ok':'warn');}
+  else if(score===100)toast('Selamat! Nilai 100. Kuis selesai dan kegiatan berikutnya telah terbuka.','ok');
+  else toast(`Nilai ${score}. Belum mencapai 100, silakan ulangi kuis.`,'warn');
+  S.qa[k]={};
+  if(cloudGradeLock){CLOUD_BUSY=false;cloudGradeLock=false;}
+  if(!practice){save();log(`${L[k]} nilai ${score}`)}
+  render();
+ }catch(err){toast((practice?'Latihan belum berhasil diperiksa: ':'Kuis belum berhasil dikirim: ')+err.message,'err')}
+ finally{if(cloudGradeLock)CLOUD_BUSY=false;}
 }
 
 /* ============ MATERI MODUL ============ */
