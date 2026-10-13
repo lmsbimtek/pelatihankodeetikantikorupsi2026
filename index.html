@@ -608,22 +608,14 @@ async function importCertSheet(){const url=$('#certSheetUrl').value.trim();if(!u
 function certLinkOne(id){const p=DB.users.find(x=>x.id===id);if(!p||!finalLulus(p)){toast('Peserta belum memenuhi syarat lulus.','err');return}const url=prompt('Masukkan link HTTPS sertifikat PDF:',certMap()[p.username.toLowerCase()]?.url||'');if(!url)return;if(!/^https:\/\//i.test(url)){toast('Link harus HTTPS.','err');return}certMap()[p.username.toLowerCase()]={url,name:'Sertifikat '+p.nama,updatedAt:Date.now()};if(save()){toast('Link sertifikat disimpan.','ok');adminRender()}}
 async function deleteCertificate(id){
  if(U?.role!=='admin'){toast('Hanya Admin yang dapat menghapus sertifikat.','err');return}
- const p=DB.users.find(x=>x.id===id&&x.role==='peserta');
- if(!p){toast('Data peserta tidak ditemukan.','err');return}
- const cert=certMap();
- const keys=[String(p.username||'').toLowerCase(),String(p.id||'')].filter(Boolean);
- const previous={};
- keys.forEach(k=>{if(Object.prototype.hasOwnProperty.call(cert,k))previous[k]=cert[k]});
- if(!Object.keys(previous).length){toast('Peserta ini belum memiliki sertifikat.','warn');adminRender();return}
- if(!confirm(`Hapus sertifikat milik ${p.nama} (${p.username})? Data peserta, nilai, kehadiran, jawaban ujian, dan pengaturan LMS tidak akan dihapus.`))return;
- Object.keys(previous).forEach(k=>delete cert[k]);
+ const p=DB.users.find(x=>x.id===id&&x.role==='peserta');if(!p)return;
+ const cert=certMap(),keys=[String(p.username||'').toLowerCase(),String(p.id||'')].filter((k,i,a)=>k&&a.indexOf(k)===i&&Object.prototype.hasOwnProperty.call(cert,k));
+ if(!keys.length){toast('Peserta ini belum memiliki sertifikat untuk dihapus.','warn');return}
+ if(!confirm(`Hapus sertifikat milik ${p.nama} (${p.username})? Data peserta, nilai, kehadiran, jawaban, riwayat ujian, dan pengaturan LMS tidak akan dihapus.`))return;
+ const previous=keys.map(k=>[k,cert[k]]);
+ keys.forEach(k=>delete cert[k]);
  const ok=await persistAdminControl('Sertifikat '+p.nama+' dihapus');
- if(!ok){
-  Object.assign(cert,previous);
-  try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){}
-  toast('Penghapusan sertifikat tidak dikonfirmasi oleh cloud. Sertifikat dipulihkan di browser ini.','err');
-  adminRender();return;
- }
+ if(!ok){for(const [k,v] of previous)cert[k]=v;try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){}toast('Penghapusan sertifikat gagal disinkronkan; sertifikat dipulihkan. Data lainnya tidak diubah.','err');adminRender();return}
  adminRender();
 }
 
