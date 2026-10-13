@@ -203,9 +203,10 @@ function pager(total,cur,key){const pages=Math.max(1,Math.ceil(total/PER));retur
 window.setPg=(k,n)=>{if(k==='peserta'){S.pf.pg=n;drawPT()}else{S.kf.pg=n;drawHD()}};
 
 /* ============ SISTEM UJIAN & KUIS ============ */
-function ansE(i,o){const k=S.exam;if(!k||!U.ex[k]||U.ex[k].done)return;U.ex[k].ans[i]=o;save()}
+function ansE(i,o){const k=S.exam,e=U.ex?.[k];if(!k||!e||e.done)return;if(now()>=examDeadline(e,k,U)){toast('Waktu Ujian Selesai. Jawaban tidak dapat diubah atau dikirim setelah batas waktu.','warn');render();return}e.ans=e.ans||{};e.ans[i]=o;save()}
 function ansQ(i,o){const k=S.qk;if(!k)return;S.qa[k]=S.qa[k]||{};S.qa[k][i]=o}
-function examDeadline(e){return Number.isFinite(e?.deadlineOverride)?e.deadlineOverride:(e?.start||0)+(Number.isFinite(e?.durationMs)?e.durationMs:(Number(U?.examDurationMs?.[S.exam])||EXAM_MS))}
+function examDeadline(e,k=S.exam,p=U){if(Number.isFinite(e?.deadlineOverride))return e.deadlineOverride;const duration=Number.isFinite(e?.durationMs)?e.durationMs:(Number(p?.examDurationMs?.[k])||Number(U?.examDurationMs?.[k])||Number(U?.examDurationMs?.[S.exam])||EXAM_MS);return (e?.start||0)+duration}
+function examExpiredFor(p,k){const e=p?.ex?.[k];return !!(e&&!e.done&&Number.isFinite(e.start)&&now()>=examDeadline(e,k,p))}
 function effectiveExamSchedule(p,k){const personal=p?.examSchedule?.[k];if(personal&&personal.date&&personal.startTime&&personal.endTime)return personal;return DB.examScheduleGlobal?.[k]||{};}
 function scheduleWindow(p,k){const x=effectiveExamSchedule(p,k)||{};if(!x.date||!x.startTime||!x.endTime)return {state:'open',text:'Jadwal belum membatasi akses'};const a=new Date(x.date+'T'+x.startTime+':00').getTime(),b=new Date(x.date+'T'+x.endTime+':00').getTime(),n=now();if(!Number.isFinite(a)||!Number.isFinite(b)||b<=a)return {state:'invalid',text:'Jadwal belum valid'};if(n<a)return {state:'early',text:'Ujian dibuka '+x.date+' pukul '+x.startTime};if(n>b)return {state:'late',text:'Waktu akses berakhir '+x.date+' pukul '+x.endTime};return {state:'open',text:'Ujian dibuka sampai pukul '+x.endTime};}
 function examScheduleForm(id,k){const p=id?DB.users.find(x=>x.id===id):null;const x=(id?(p?.examSchedule?.[k]||{}):(DB.examScheduleGlobal?.[k]||{}));const label=id?('Peserta '+(p?.nama||'')):'Semua peserta';modal(`<h3 style="margin-top:0">Jadwal ${esc(L[k])}</h3><p class="muted">${esc(label)}. Jadwal khusus peserta mengesampingkan jadwal semua peserta. Jika jadwal khusus dikosongkan, peserta kembali mengikuti jadwal semua peserta. Pada jadwal semua peserta, kosongkan semua kolom untuk menghapus batas jadwal global.</p><label>Tanggal</label><input id="esDate" type="date" value="${esc(x.date||'')}"><div class="grid"><div><label>Waktu mulai</label><input id="esStart" type="time" value="${esc(x.startTime||'')}"></div><div><label>Waktu selesai</label><input id="esEnd" type="time" value="${esc(x.endTime||'')}"></div></div><p class="muted">Menggunakan waktu lokal perangkat. Jadwal hanya mengatur kapan ujian dapat dimulai; percobaan aktif dan jawaban tersimpan tidak diubah.</p><div class="row" style="justify-content:flex-end"><button class="btn s" onclick="closeM()">Batal</button><button class="btn" onclick="saveExamSchedule('${id||''}','${k}')">Simpan Jadwal</button></div>`)}
@@ -213,7 +214,7 @@ window.saveExamSchedule=async function(id,k){const date=$('#esDate').value,start
 function startExam(k){const existing=U.ex?.[k];if(!existing||existing.done){const w=scheduleWindow(U,k);if(w.state!=='open'){toast(w.text+'. Ujian belum dapat dimulai.','warn');return}}U.ex=U.ex||{};U.ex[k]={start:now(),ans:{},tabs:0,done:false,durationMs:Number(U.examDurationMs?.[k])||EXAM_MS};save();log('Mulai '+L[k]);try{document.documentElement.requestFullscreen?.().catch(()=>{})}catch(e){}toast('Ujian dimulai. Timer berjalan.','ok');render()}
 async function submitExam(k,auto){
  const e=U.ex?.[k];if(!e||e.done||e.submitting||e.submitFailed)return;
- const expired=now()>=examDeadline(e);
+ if(now()>=examDeadline(e,k,U)){toast('Waktu Ujian Selesai. Jawaban tidak dapat dikirim setelah batas waktu. Jawaban yang sudah tersimpan tetap dipertahankan.','warn');render();return}
  e.submitting=true;
  try{
   if(U.cloudAuth){const result=await cloudRequest('lms-data',{action:'grade',assessmentKey:k,answers:e.ans});Object.assign(U,result.user||{});}
@@ -230,14 +231,15 @@ function focusLost(){
 }
 window.addEventListener('blur',focusLost);
 document.addEventListener('visibilitychange',()=>{if(document.hidden)focusLost()});
+let EXAM_TIMEOUT_RENDERED={};
 setInterval(()=>{
  if(!U||U.role!=='peserta')return;
  if(S.exam){
-  const k=S.exam,e=U.ex?.[k];
-  const el=$('#tmr');
-  if(el&&e)el.textContent=fmtLeft(examDeadline(e)-now());
-  // Saat waktu habis, jangan kirim otomatis atau memunculkan notifikasi berulang.
-  // Peserta menekan tombol Kirim Jawaban untuk memulai pengiriman satu kali.
+  const k=S.exam,e=U.ex?.[k];if(!e||e.done)return;
+  const remaining=examDeadline(e,k,U)-now(),el=$('#tmr');
+  if(el)el.textContent=fmtLeft(remaining);
+  if(remaining<=0&&!EXAM_TIMEOUT_RENDERED[k]){EXAM_TIMEOUT_RENDERED[k]=true;render()}
+  else if(remaining>0)EXAM_TIMEOUT_RENDERED[k]=false;
  }
 },1000);
 // Ambil perubahan kontrol Admin dari cloud secara berkala pada sesi peserta.
@@ -267,7 +269,7 @@ setInterval(async()=>{
   const timer=$('#tmr');
   if(activeExam && timer && (newDeadline!==oldDeadline || U.ex?.[activeExam]?.timeAdjustedAt!==oldTimeAdjusted)){
    timer.textContent=fmtLeft(newDeadline-now());
-   if(newDeadline>now() && U.ex?.[activeExam]){U.ex[activeExam].submitFailed=false;U.ex[activeExam].submitting=false;}
+   if(newDeadline>now() && U.ex?.[activeExam]){U.ex[activeExam].submitFailed=false;U.ex[activeExam].submitting=false;EXAM_TIMEOUT_RENDERED[activeExam]=false;}
    render();
   }
   if(!!U.adminLocked!==oldLock){
@@ -277,17 +279,18 @@ setInterval(async()=>{
  }catch(e){console.warn('Pemeriksaan perubahan Admin gagal:',e)}
  finally{CLOUD_POLL_BUSY=false}
 },3000);
-const qCard=(q,i,sel,fn)=>`<div class="card"><b>${i+1}. ${esc(q.q)}</b>${['a','b','c','d'].map(o=>`<label class="qopt"><input type="radio" name="q${i}" ${sel===o?'checked':''} onchange="${fn}(${i},'${o}')">${o.toUpperCase()}. ${esc(q[o])}</label>`).join('')}</div>`;
+const qCard=(q,i,sel,fn,disabled=false)=>`<div class="card"><b>${i+1}. ${esc(q.q)}</b>${['a','b','c','d'].map(o=>`<label class="qopt"><input type="radio" name="q${i}" ${sel===o?'checked':''} ${disabled?'disabled':''} onchange="${fn}(${i},'${o}')">${o.toUpperCase()}. ${esc(q[o])}</label>`).join('')}</div>`;
 function examView(k){
  const e=U.ex?.[k],qs=DB.q[k]||[];
  const examExpired=!!(e&&!e.done&&Number.isFinite(e.start)&&now()>=examDeadline(e));
  if(e?.done)return `<div class="card"><h3 style="margin-top:0">${L[k]}</h3><p>Nilai Anda: <b style="font-size:30px;color:var(--p)">${e.score}</b></p><div class="muted">Mulai: ${fmt(e.start)} · Selesai: ${fmt(e.end)} · Durasi: ${dur(e.dur*1000)} · Pindah tab: ${e.tabs||0}x</div></div>`;
  if(qs.length<EXAM_N)return `<div class="card"><h3 style="margin-top:0">${L[k]}</h3><div class="err">Bank soal belum lengkap (${qs.length}/${EXAM_N}). Hubungi Admin.</div></div>`;
- if(!e)return `<div class="card"><h3 style="margin-top:0">${L[k]}</h3><ul style="line-height:1.8"><li>${EXAM_N} soal pilihan ganda (4 pilihan)</li><li>Durasi 120 menit dengan timer otomatis</li><li>Jawaban tersimpan otomatis</li><li>Pengiriman otomatis saat waktu habis</li><li>Perpindahan tab atau hilang fokus dicatat</li></ul><button class="btn" onclick="startExam('${k}')">Mulai ${L[k]}</button></div>`;
+ if(!e)return `<div class="card"><h3 style="margin-top:0">${L[k]}</h3><ul style="line-height:1.8"><li>${EXAM_N} soal pilihan ganda (4 pilihan)</li><li>Durasi 120 menit dengan timer otomatis</li><li>Jawaban tersimpan otomatis</li><li>Jawaban harus dikirim sebelum waktu habis; pengiriman setelah batas waktu ditutup</li><li>Perpindahan tab atau hilang fokus dicatat</li></ul><button class="btn" onclick="startExam('${k}')">Mulai ${L[k]}</button></div>`;
  S.exam=k;
- return `<div class="card"><div class="row" style="justify-content:space-between"><b>${L[k]}</b><span class="timer" id="tmr">${fmtLeft(examDeadline(e)-now())}</span></div>${examExpired?'<div class="err">Waktu ujian telah habis</div>':''}<div class="muted">Pindah tab: <span id="tabs">${e.tabs||0}</span>x · Jawaban tersimpan otomatis</div></div>`+
- qs.slice(0,EXAM_N).map((q,i)=>qCard(q,i,e.ans[i],'ansE')).join('')+
- `<div class="card"><button class="btn g" onclick="if(!${examExpired} && Object.keys(U.ex?.['${k}']?.ans||{}).length < (DB.q['${k}']||[]).slice(0,EXAM_N).length){toast('Masih ada soal yang belum dijawab. Lengkapi semua jawaban sebelum mengirim.','warn')}else if(confirm('Kirim jawaban sekarang?')){submitExam('${k}',${examExpired})}">Kirim Jawaban</button></div>`;
+ if(examExpired)EXAM_TIMEOUT_RENDERED[k]=true;else EXAM_TIMEOUT_RENDERED[k]=false;
+ return `<div class="card"><div class="row" style="justify-content:space-between"><b>${L[k]}</b><span class="timer" id="tmr">${fmtLeft(examDeadline(e,k,U)-now())}</span></div>${examExpired?'<div class="err"><b>Waktu Ujian Selesai</b><br>Waktu pengiriman telah berakhir. Jawaban yang sudah tersimpan tetap dipertahankan, tetapi tidak dapat dikirim setelah batas waktu.</div>':''}<div class="muted">Pindah tab: <span id="tabs">${e.tabs||0}</span>x · Jawaban tersimpan otomatis</div></div>`+
+ qs.slice(0,EXAM_N).map((q,i)=>qCard(q,i,e.ans[i],'ansE',examExpired)).join('')+
+ (examExpired?`<div class="card"><button class="btn g" disabled>Waktu Ujian Selesai</button><p class="muted">Pengiriman jawaban sudah ditutup. Hubungi Admin jika waktu perlu ditinjau. Jawaban yang telah tersimpan tidak dihapus.</p></div>`:`<div class="card"><button class="btn g" onclick="if(now()>=examDeadline(U.ex?.['${k}'],'${k}',U)){toast('Waktu Ujian Selesai. Jawaban tidak dapat dikirim setelah batas waktu.','warn');render()}else if(Object.keys(U.ex?.['${k}']?.ans||{}).length < (DB.q['${k}']||[]).slice(0,EXAM_N).length){toast('Masih ada soal yang belum dijawab. Lengkapi semua jawaban sebelum mengirim.','warn')}else if(confirm('Kirim jawaban sekarang?')){submitExam('${k}',false)}">Kirim Jawaban</button></div>`);
 }
 function quizView(k){
  if(!unlocked(U,k))return lockCard(k);
@@ -453,7 +456,7 @@ function render(){
  if(!U){landing();return}
  U.role==='admin'?adminRender():pesRender();
 }
-function status(p,s){if(isDone(p,s))return['🟢','Selesai','bg-ok'];if(!unlocked(p,s))return['🔒','Terkunci','bg-n'];if(p.seen?.[s])return['🟡','Sedang Berlangsung','bg-w'];return['⚪','Belum Dimulai','bg-n']}
+function status(p,s){if(isDone(p,s))return['🟢','Selesai','bg-ok'];if((s==='tesAwal'||s==='tesAkhir')&&examExpiredFor(p,s))return['🔴','Waktu Ujian Selesai','bg-w'];if(!unlocked(p,s))return['🔒','Terkunci','bg-n'];if(p.seen?.[s])return['🟡','Sedang Berlangsung','bg-w'];return['⚪','Belum Dimulai','bg-n']}
 function stepRow(p,s){const[i,t,c]=status(p,s);return `<div class="step" style="cursor:pointer" onclick="go('${s}')"><div class="ic">${i}</div><div style="flex:1;min-width:160px"><b>${activityLabel(s)}</b>${!unlocked(p,s)?`<div class="muted">${s.startsWith('vr')?'Terbuka otomatis sesuai jadwal Virtual.':'Selesaikan kegiatan sebelumnya terlebih dahulu untuk membuka kegiatan ini.'}</div>`:''}</div><span class="badge ${c}">${t}</span></div>`}
 function pDash(){
  const p=U,n=doneCount(p),pct=prog(p),fs=finalScore(p);
@@ -683,13 +686,13 @@ async function adjustExamTime(id,k){
 }
 function detail(id){
  const p=DB.users.find(x=>x.id===id),fs=finalScore(p);
- const info=s=>{const e=p.ex?.[s];if(e)return[e.end,e.done?'Nilai '+e.score+' · pindah tab '+(e.tabs||0)+'x':'Sedang dikerjakan'];
+ const info=s=>{const e=p.ex?.[s];if(e){const expired=!e.done&&examExpiredFor(p,s);return[e.end||(expired?examDeadline(e,s,p):''),e.done?'Nilai '+e.score+' · pindah tab '+(e.tabs||0)+'x':expired?'Waktu Ujian Selesai':'Sedang dikerjakan']};
   if(s.startsWith('mod')){const m=p.mod?.[s.slice(3)];return[m?.last,`Materi dibuka ${m?.v?.length||0} · durasi akses ${dur((m?.dur||0)*1000)}`]}
   if(s.startsWith('kuis')){const z=p.kz?.[s];return[z?.lt,z?`${z.att.length}x percobaan · ${z.lulus?'lulus (100)':'belum lulus'}`:'Belum dikerjakan']}
   if(s.startsWith('vr')){const a=p.att?.[s];return[a?.t,a?a.st:(vrStat(s)==='selesai'?'Tidak hadir':'Belum check-in')]}
   return['','']};
  modal(`<h3 style="margin-top:0">${esc(p.nama)}</h3><div class="muted">${esc(p.jabatan||'-')} · ${esc(p.instansi)} · ${esc(p.kab)} · ${esc(p.prov)} · @${esc(p.username)}</div>
- <div class="tw" style="margin-top:12px"><table><tr><th>Kegiatan</th><th>Status</th><th>Waktu Terakhir</th><th>Keterangan</th></tr>${STEPS.map(s=>{const i=info(s);return `<tr><td>${L[s]}</td><td>${isDone(p,s)?'🟢 Selesai':unlocked(p,s)?'🟡 Berlangsung':'🔒 Terkunci'}</td><td>${fmt(i[0])}</td><td>${esc(i[1])}</td></tr>`}).join('')}</table></div>
+ <div class="tw" style="margin-top:12px"><table><tr><th>Kegiatan</th><th>Status</th><th>Waktu Terakhir</th><th>Keterangan</th></tr>${STEPS.map(s=>{const i=info(s),expiredExam=(s==='tesAwal'||s==='tesAkhir')&&examExpiredFor(p,s);return `<tr><td>${L[s]}</td><td>${isDone(p,s)?'🟢 Selesai':expiredExam?'🔴 Waktu Ujian Selesai':unlocked(p,s)?'🟡 Berlangsung':'🔒 Terkunci'}</td><td>${fmt(i[0])}</td><td>${esc(i[1])}</td></tr>`}).join('')}</table></div>
  <p><b>Progres:</b> ${prog(p)}% · <b>Kehadiran:</b> ${attPct(p)}% · <b>Nilai Akhir:</b> ${fs??'-'}</p>
  <div class="card" style="margin-top:12px"><h4 style="margin-top:0">Kontrol Admin</h4><p>Status akses: <b>${p.adminLocked?'Dikunci Admin':'Aktif'}</b></p><div class="row" style="flex-wrap:wrap"><button class="btn ${p.adminLocked?'g':'d'}" onclick="toggleParticipantLock('${id}')">${p.adminLocked?'Buka Kunci Peserta':'Kunci Peserta'}</button><button class="btn s" onclick="adjustExamTime('${id}','tesAwal')">Atur Waktu Tes Awal</button><button class="btn s" onclick="adjustExamTime('${id}','tesAkhir')">Atur Waktu Tes Akhir</button><button class="btn s" onclick="examScheduleForm('${id}','tesAwal')">Jadwal Tes Awal</button><button class="btn s" onclick="examScheduleForm('${id}','tesAkhir')">Jadwal Tes Akhir</button></div><p class="muted">Berlaku untuk peserta yang belum ujian (durasi awal), sedang ujian (sisa waktu), atau waktunya habis tetapi belum dikirim. Jawaban tersimpan tidak dihapus. Ujian yang sudah dikirim dan dinilai tidak dibuka ulang.</p></div>
  <div class="card" style="margin-top:12px"><h4 style="margin-top:0">Akses Menu Belajar Peserta</h4><p class="muted">Peserta baru mengikuti aturan otomatis LMS. Anda dapat mengatur akses khusus per menu; gunakan tombol berikut untuk mengembalikan peserta ini ke aturan otomatis tanpa menghapus progres atau data.</p><button class="btn s sm" onclick="resetParticipantMenuAccess('${id}')">Kembalikan ke Aturan LMS Otomatis</button><div class="grid" style="margin-top:10px">${ORDER.map(st=>{const explicit=Object.prototype.hasOwnProperty.call(p.menuAccess||{},st);const open=explicit?p.menuAccess[st]:unlocked(p,st);return `<div class="row" style="justify-content:space-between;gap:8px;border:1px solid var(--line);padding:8px;border-radius:8px"><span>${esc(L[st])}<small class="muted" style="display:block">${explicit?'Pengaturan Admin':'Aturan LMS'}</small></span><button class="btn ${open?'d':'g'} s" onclick="toggleParticipantMenu('${id}','${st}')">${open?'Kunci Menu':'Buka Menu'}</button></div>`}).join('')}</div></div>
