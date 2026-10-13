@@ -562,21 +562,28 @@ function participantCertificateView(p){
  if(!finalLulus(p))return `<div class="card"><h3>Sertifikat</h3><p>Sertifikat tersedia setelah Nilai Akhir mencapai minimal 80.</p></div>`;
  if(!c)return `<div class="card"><h3>Sertifikat</h3><p>Sertifikat Anda belum diunggah atau ditautkan oleh Admin.</p></div>`;
  const key=certMap()[String(p.username||'').toLowerCase()]?String(p.username||'').toLowerCase():p.id;
- const action=c.data
-  ? `<button class="btn" onclick="openCertificate('${esc(key)}')">Buka Sertifikat</button> <button class="btn s" onclick="downloadCertificate('${esc(key)}')">Unduh Sertifikat PDF</button>`
-  : `<a class="btn" href="${esc(c.url)}" target="_blank" rel="noopener">Buka / Unduh Sertifikat</a>`;
- return `<div class="card"><h3>Sertifikat</h3><p>${esc(c.name||c.filename||'Sertifikat tersedia')}</p><div class="row" style="margin-top:14px;flex-wrap:wrap">${action}</div><p class="muted" style="margin-top:10px">Untuk tautan PDF, gunakan ikon unduh pada penampil PDF jika file terbuka di tab baru.</p></div>`;
+ const action = `<button class="btn" onclick="downloadCertificate('${esc(key)}')">Unduh Sertifikat PDF</button>`;
+ return `<div class="card"><h3>Sertifikat</h3><p>${esc(c.name||c.filename||'Sertifikat tersedia')}</p><div class="row" style="margin-top:14px;flex-wrap:wrap">${action}</div><p class="muted" style="margin-top:10px">Sertifikat diunduh langsung ke perangkat Anda. Tombol untuk membuka sertifikat di LMS tidak ditampilkan.</p></div>`;
 }
-function openCertificate(key){
+async function downloadCertificate(key){
  const c=certMap()[key];
  if(!c){toast('Sertifikat tidak ditemukan.','err');return}
- if(c.url){window.open(c.url,'_blank','noopener');return}
- if(!c.data){toast('File sertifikat tidak tersedia.','err');return}
- const win=window.open('about:blank','_blank');
- if(!win){toast('Popup diblokir browser. Izinkan popup untuk membuka sertifikat.','err');return}
- fetch(c.data).then(r=>r.blob()).then(blob=>{const url=URL.createObjectURL(blob);win.location.href=url;setTimeout(()=>URL.revokeObjectURL(url),120000)}).catch(e=>{try{win.close()}catch(_){}toast('Sertifikat gagal dibuka. Silakan unduh file.','err')});
+ const filename=(String(c.filename||c.name||'Sertifikat.pdf').split(/[\\/]/).pop()||'Sertifikat.pdf');
+ if(c.data){
+  const a=document.createElement('a');a.href=c.data;a.download=filename;a.style.display='none';document.body.append(a);a.click();a.remove();return;
+ }
+ if(c.url){
+  try{
+   const response=await fetch(c.url,{method:'GET',mode:'cors'});
+   if(!response.ok)throw new Error('HTTP '+response.status);
+   const blob=await response.blob();
+   if(!blob.size)throw new Error('File kosong');
+   const objectUrl=URL.createObjectURL(blob),a=document.createElement('a');a.href=objectUrl;a.download=filename;a.style.display='none';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(objectUrl),60000);
+  }catch(e){toast('Unduh langsung tidak diizinkan oleh tautan ini. Minta Admin mengunggah PDF atau ZIP langsung ke LMS.','err')}
+  return;
+ }
+ toast('File sertifikat tidak tersedia untuk diunduh.','err');
 }
-function downloadCertificate(key){const c=certMap()[key];if(!c?.data){toast('File PDF tidak tersedia untuk diunduh.','err');return}const a=document.createElement('a');a.href=c.data;a.download=c.filename||'Sertifikat.pdf';document.body.append(a);a.click();a.remove()}
 async function deleteCertificate(id){
  const p=DB.users.find(x=>x.id===id&&x.role==='peserta');
  if(!p){toast('Data peserta tidak ditemukan.','err');return}
