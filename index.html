@@ -559,51 +559,20 @@ function finalLulus(p){const n=finalScore(p);return n!==null&&n>=80&&n<=100}
 function certMap(){DB.certificates=DB.certificates||{};return DB.certificates}
 function participantCertificateView(p){
  const c=certMap()[p.username.toLowerCase()]||certMap()[p.id];
- if(!finalLulus(p))return `<div class="card"><h3>Sertifikat</h3><p>Sertifikat tersedia setelah Nilai Akhir mencapai minimal 80.</p></div>`;
- if(!c)return `<div class="card"><h3>Sertifikat</h3><p>Sertifikat Anda belum diunggah atau ditautkan oleh Admin.</p></div>`;
- const key=certMap()[String(p.username||'').toLowerCase()]?String(p.username||'').toLowerCase():p.id;
- const action = `<button class="btn" onclick="downloadCertificate('${esc(key)}')">Unduh Sertifikat PDF</button>`;
- return `<div class="card"><h3>Sertifikat</h3><p>${esc(c.name||c.filename||'Sertifikat tersedia')}</p><div class="row" style="margin-top:14px;flex-wrap:wrap">${action}</div></div>`;
+ if(!finalLulus(p)||!c)return `<div class="card"><h3>Sertifikat</h3></div>`;
+ const action=c.data?`<button class="btn" onclick="downloadCertificate('${esc(p.username.toLowerCase())}')">Unduh Sertifikat PDF</button>`:`<a class="btn" href="${esc(c.url)}" target="_blank" rel="noopener">Buka / Unduh Sertifikat</a>`;
+ return `<div class="card"><h3>Sertifikat</h3>${esc(c.name||'')}<div style="margin-top:14px">${action}</div></div>`;
 }
-async function downloadCertificate(key){
- const c=certMap()[key];
- if(!c){toast('Sertifikat tidak ditemukan.','err');return}
- const filename=(String(c.filename||c.name||'Sertifikat.pdf').split(/[\\/]/).pop()||'Sertifikat.pdf');
- if(c.data){
-  const a=document.createElement('a');a.href=c.data;a.download=filename;a.style.display='none';document.body.append(a);a.click();a.remove();return;
- }
- if(c.url){
-  try{
-   const response=await fetch(c.url,{method:'GET',mode:'cors'});
-   if(!response.ok)throw new Error('HTTP '+response.status);
-   const blob=await response.blob();
-   if(!blob.size)throw new Error('File kosong');
-   const objectUrl=URL.createObjectURL(blob),a=document.createElement('a');a.href=objectUrl;a.download=filename;a.style.display='none';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(objectUrl),60000);
-  }catch(e){toast('Unduh langsung tidak diizinkan oleh tautan ini. Minta Admin mengunggah PDF atau ZIP langsung ke LMS.','err')}
-  return;
- }
- toast('File sertifikat tidak tersedia untuk diunduh.','err');
-}
-async function deleteCertificate(id){
- const p=DB.users.find(x=>x.id===id&&x.role==='peserta');
- if(!p){toast('Data peserta tidak ditemukan.','err');return}
- const cert=certMap(),userKey=String(p.username||'').toLowerCase(),keys=[...new Set([userKey,p.id])].filter(k=>Object.prototype.hasOwnProperty.call(cert,k));
- if(!keys.length){toast('Peserta ini belum memiliki sertifikat untuk dihapus.','warn');return}
- if(!confirm(`Hapus sertifikat untuk ${p.nama} (${p.username})? Data peserta, nilai, dan riwayat ujian tidak akan dihapus.`))return;
- const previous=keys.map(k=>[k,cert[k]]);keys.forEach(k=>delete cert[k]);
- const synced=await persistAdminControl('Sertifikat peserta berhasil dihapus.');
- if(!synced){previous.forEach(([k,v])=>cert[k]=v);save();adminRender();toast('Penghapusan dibatalkan pada tampilan ini karena sinkronisasi cloud gagal. Periksa koneksi lalu coba kembali.','warn');return}
- adminRender();
-}
+function downloadCertificate(key){const c=certMap()[key];if(!c?.data){toast('File PDF tidak tersedia.','err');return}const a=document.createElement('a');a.href=c.data;a.download=c.filename||'Sertifikat.pdf';document.body.append(a);a.click();a.remove()}
 function adminCertificatesView(){
  const P=peserta(),pass=P.filter(finalLulus),cert=certMap();
- const rows=pass.map(p=>{const c=cert[p.username.toLowerCase()]||cert[p.id];const certStatus=!c?'Belum ada':c.data?`PDF tersimpan: ${esc(c.filename||c.name||'Sertifikat.pdf')}`:`<a target="_blank" rel="noopener" href="${esc(c.url)}">Buka tautan</a>`;const del=c?` <button class="btn sm s" onclick="deleteCertificate('${esc(p.id)}')">Hapus Sertifikat</button>`:'';return `<tr><td>${esc(p.nama)}</td><td>${esc(p.username)}</td><td>${finalScore(p)}</td><td>${certStatus}</td><td><button class="btn sm s" onclick="certUploadOne('${esc(p.id)}')">Upload PDF</button> <button class="btn sm s" onclick="certLinkOne('${esc(p.id)}')">Atur Link</button>${del}</td></tr>`}).join('');
+ const rows=pass.map(p=>{const c=cert[p.username.toLowerCase()]||cert[p.id];return `<tr><td>${esc(p.nama)}</td><td>${esc(p.username)}</td><td>${finalScore(p)}</td><td>${c?(c.data?'PDF diunggah':`<a target="_blank" rel="noopener" href="${esc(c.url)}">Link sertifikat</a>`):'Belum ada'}</td><td><button class="btn sm s" onclick="certUploadOne('${p.id}')">Upload PDF</button> <button class="btn sm s" onclick="certLinkOne('${p.id}')">Atur Link</button> <button class="btn sm d" ${c?'':'disabled'} onclick="deleteCertForParticipant('${p.id}')">Hapus Sertifikat</button></td></tr>`}).join('');
  return `<div class="card"><h3>Manajemen Sertifikat</h3><p class="muted">Sertifikat hanya diberikan kepada peserta dengan Nilai Akhir 80–100. ZIP berisi file PDF dengan nama file sesuai username atau nama peserta (tanpa ekstensi .pdf); pencocokan mengabaikan huruf besar/kecil dan tanda baca.</p><div class="grid">${kpi('Peserta Lulus',pass.length)}${kpi('Belum Lulus',P.length-pass.length)}${kpi('Sertifikat tersedia',pass.filter(p=>cert[p.username.toLowerCase()]||cert[p.id]).length)}</div></div>
  <div class="card"><h3>Upload PDF Individu</h3><p>Pilih peserta lulus dan file PDF sertifikatnya.</p><label>Peserta</label><select id="certOneUser">${pass.map(p=>`<option value="${esc(p.id)}">${esc(p.nama)} — ${esc(p.username)} (${finalScore(p)})</option>`).join('')}</select><label>File sertifikat PDF</label><input id="certOneFile" type="file" accept="application/pdf"><button class="btn" style="margin-top:12px" onclick="uploadOneCert()">Simpan Sertifikat</button></div>
- <div class="card"><h3>Upload Sertifikat Kolektif (ZIP)</h3><p>Unggah satu file ZIP berisi kumpulan PDF sertifikat. Sistem menautkan setiap PDF ke peserta yang cocok, sehingga peserta membuka/mengunduh PDF miliknya sendiri. Nama file harus sesuai dengan <b>username</b> atau <b>nama peserta</b>, contoh <code>maria123.pdf</code> atau <code>Maria Tuarita.pdf</code>. Hanya peserta dengan Nilai Akhir 80–100 yang akan menerima sertifikat. Peserta yang tidak cocok atau belum lulus dilewati.</p><label>File ZIP berisi PDF</label><input id="certZipFile" type="file" accept=".zip,application/zip"><button class="btn" style="margin-top:10px" onclick="importCertZip()">Proses ZIP dan Simpan Sertifikat</button><div id="certZipStatus" class="muted" style="margin-top:10px"></div></div>
+ <div class="card"><h3>Upload Sertifikat Kolektif (ZIP)</h3><p>Unggah satu file ZIP berisi PDF sertifikat. Nama file harus sesuai dengan <b>username</b> atau <b>nama peserta</b>, contoh <code>maria123.pdf</code> atau <code>Maria Tuarita.pdf</code>. Hanya peserta dengan Nilai Akhir 80–100 yang akan menerima sertifikat. Peserta yang tidak cocok atau belum lulus dilewati.</p><label>File ZIP berisi PDF</label><input id="certZipFile" type="file" accept=".zip,application/zip"><button class="btn" style="margin-top:10px" onclick="importCertZip()">Proses ZIP dan Simpan Sertifikat</button><div id="certZipStatus" class="muted" style="margin-top:10px"></div></div>
  <div class="card"><h3>Upload Kolektif melalui CSV</h3><p>CSV dengan kolom <code>username,link</code> atau <code>nama,username,link</code>. Baris hanya diterapkan jika peserta cocok dan lulus (Nilai Akhir 80–100).</p><label>Pilih file CSV</label><input id="certCsv" type="file" accept=".csv,text/csv"><button class="btn" style="margin-top:10px" onclick="importCertCsv()">Impor CSV</button></div>
  <div class="card"><h3>Impor dari Google Sheets</h3><p>Gunakan link CSV publik/terbitkan ke web dari Google Sheets. Kolom wajib: <code>username</code> dan <code>link</code> (URL PDF).</p><label>Link CSV Google Sheets</label><input id="certSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/.../export?format=csv"><button class="btn" style="margin-top:10px" onclick="importCertSheet()">Ambil Data Sheet</button></div>
- <div class="card"><h3>Daftar Peserta Lulus</h3><p class="muted">Gunakan tombol Hapus Sertifikat untuk menghapus sertifikat peserta saja; data peserta, nilai, dan riwayat ujian tetap dipertahankan.</p><div class="tw"><table><tr><th>Nama</th><th>Username</th><th>Nilai Akhir</th><th>Sertifikat</th><th>Aksi</th></tr>${rows||'<tr><td colspan="5" class="empty">Belum ada peserta lulus (80–100).</td></tr>'}</table></div></div>`;
+ <div class="card"><h3>Daftar Peserta Lulus</h3><div class="tw"><table><tr><th>Nama</th><th>Username</th><th>Nilai Akhir</th><th>Sertifikat</th><th>Aksi</th></tr>${rows||'<tr><td colspan="5" class="empty">Belum ada peserta lulus (80–100).</td></tr>'}</table></div></div>`;
 }
 function certUploadOne(id){const p=DB.users.find(x=>x.id===id);if(!p||!finalLulus(p)){toast('Peserta belum memenuhi syarat lulus (80–100).','err');return}$('#certOneUser').value=id;$('#certOneFile').click()}
 async function uploadOneCert(){const id=$('#certOneUser')?.value,file=$('#certOneFile')?.files?.[0],p=DB.users.find(x=>x.id===id);if(!p||!finalLulus(p)){toast('Peserta belum memenuhi syarat lulus (80–100).','err');return}if(!file||file.type!=='application/pdf'){toast('Pilih file PDF yang valid.','err');return}if(file.size>4*1024*1024){toast('Ukuran PDF maksimal 4 MB agar penyimpanan LMS tidak terlalu besar.','err');return}const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file)});certMap()[p.username.toLowerCase()]={data,filename:file.name,name:file.name,updatedAt:Date.now()};if(save()){toast('Sertifikat berhasil disimpan.','ok');adminRender()}}
@@ -637,6 +606,23 @@ function parseCsvCert(text){const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/
 function applyCertRows(rows){let ok=0,skip=0;const cert=certMap();for(const row of rows){const username=String(row.username||row.user||'').trim().toLowerCase(),name=String(row.nama||row.name||'').trim(),url=String(row.link||row.url||row.sertifikat||'').trim();const p=DB.users.find(x=>x.role==='peserta'&&((username&&String(x.username).toLowerCase()===username)||(!username&&name&&String(x.nama).toLowerCase()===name)));if(!p||!finalLulus(p)||!url||!/^https:\/\//i.test(url)){skip++;continue}cert[p.username.toLowerCase()]={url,name:'Sertifikat '+p.nama,updatedAt:Date.now()};ok++}if(save()){toast(`${ok} sertifikat ditautkan; ${skip} baris dilewati (tidak cocok/tidak lulus/link tidak valid).`,'ok');adminRender()}}
 async function importCertSheet(){const url=$('#certSheetUrl').value.trim();if(!url){toast('Masukkan link CSV Google Sheets.','err');return}try{const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);const rows=parseCsvCert(await r.text());if(!rows.length)throw new Error('Sheet kosong atau bukan CSV');applyCertRows(rows)}catch(e){toast('Gagal membaca Google Sheets. Pastikan sheet diterbitkan sebagai CSV dan dapat diakses publik. '+e.message,'err')}}
 function certLinkOne(id){const p=DB.users.find(x=>x.id===id);if(!p||!finalLulus(p)){toast('Peserta belum memenuhi syarat lulus.','err');return}const url=prompt('Masukkan link HTTPS sertifikat PDF:',certMap()[p.username.toLowerCase()]?.url||'');if(!url)return;if(!/^https:\/\//i.test(url)){toast('Link harus HTTPS.','err');return}certMap()[p.username.toLowerCase()]={url,name:'Sertifikat '+p.nama,updatedAt:Date.now()};if(save()){toast('Link sertifikat disimpan.','ok');adminRender()}}
+async function deleteCertForParticipant(id){
+ if(U?.role!=='admin'){toast('Hanya Admin yang dapat menghapus sertifikat.','err');return}
+ const p=DB.users.find(x=>x.id===id&&x.role==='peserta');
+ if(!p){toast('Data peserta tidak ditemukan.','err');return}
+ const keys=[String(p.username||'').toLowerCase(),String(p.id||'')].filter(Boolean);
+ const cert=certMap();
+ if(!keys.some(k=>Object.prototype.hasOwnProperty.call(cert,k))){toast('Peserta ini belum memiliki sertifikat.','warn');return}
+ if(!confirm(`Hapus sertifikat milik ${p.nama} (${p.username})? Hanya data sertifikat peserta ini yang dihapus. Data peserta, nilai, kehadiran, dan riwayat ujian tetap dipertahankan.`))return;
+ const previous=structuredClone(cert);
+ keys.forEach(k=>delete cert[k]);
+ const ok=await persistAdminControl(`Sertifikat milik ${p.nama} dihapus.`);
+ if(ok){adminRender();return}
+ // If the cloud update fails, restore the certificate map locally so the UI does not imply a successful cloud deletion.
+ DB.certificates=previous;
+ try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){}
+ adminRender();
+}
 
 /* ============ ADMIN ============ */
 function adminRender(){
