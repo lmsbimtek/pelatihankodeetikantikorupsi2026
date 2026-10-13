@@ -563,7 +563,7 @@ function participantCertificateView(p){
  if(!c)return `<div class="card"><h3>Sertifikat</h3><p>Sertifikat Anda belum diunggah atau ditautkan oleh Admin.</p></div>`;
  const key=certMap()[String(p.username||'').toLowerCase()]?String(p.username||'').toLowerCase():p.id;
  const action = `<button class="btn" onclick="downloadCertificate('${esc(key)}')">Unduh Sertifikat PDF</button>`;
- return `<div class="card"><h3>Sertifikat</h3><p>${esc(c.name||c.filename||'Sertifikat tersedia')}</p><div class="row" style="margin-top:14px;flex-wrap:wrap">${action}</div><p class="muted" style="margin-top:10px">Sertifikat diunduh langsung ke perangkat Anda. Tombol untuk membuka sertifikat di LMS tidak ditampilkan.</p></div>`;
+ return `<div class="card"><h3>Sertifikat</h3><p>${esc(c.name||c.filename||'Sertifikat tersedia')}</p><div class="row" style="margin-top:14px;flex-wrap:wrap">${action}</div></div>`;
 }
 async function downloadCertificate(key){
  const c=certMap()[key];
