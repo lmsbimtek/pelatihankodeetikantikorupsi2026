@@ -349,23 +349,49 @@ function modView(n){
 }
 
 /* ============ VIRTUAL & KEHADIRAN ============ */
-function checkin(k,silent){
- if(vrStat(k)!=='live'){toast('Check-in hanya dapat dilakukan saat kegiatan berlangsung.','warn');return}
- if(U.att?.[k]){if(!silent)toast('Kehadiran sudah tercatat.');return}
- const w=vrWin(k),late=now()-w.st>10*60000;
- U.att=U.att||{};U.att[k]={st:late?'Terlambat':'Hadir',t:now()};save();log('Check-in '+L[k]+': '+U.att[k].st);
- toast('Kehadiran tercatat: '+U.att[k].st,'ok');
+const ATTENDANCE_BUSY={};
+async function checkin(k,silent){
+ if(vrStat(k)!=='live'){if(!silent)toast('Check-in hanya dapat dilakukan saat kegiatan berlangsung.','warn');return}
+ if(ATTENDANCE_BUSY[k])return;
+ ATTENDANCE_BUSY[k]=true;
+ U.att=U.att||{};
+ const prior=U.att[k];
+ // Show a pending state locally, but do not claim attendance is confirmed until the cloud accepts it.
+ U.att[k]={st:'Belum Tersinkronisasi',t:prior?.t||now(),pending:true};
+ clearTimeout(CLOUD_TIMER);
+ try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(e){}
+ if(!CLOUD_TOKEN){
+  ATTENDANCE_BUSY[k]=false;
+  toast('Check-in belum dikirim ke cloud. Silakan login kembali melalui akun cloud lalu ulangi check-in saat sesi berlangsung.','warn');
+  render();return;
+ }
+ try{
+  while(CLOUD_BUSY)await new Promise(resolve=>setTimeout(resolve,100));
+  clearTimeout(CLOUD_TIMER);CLOUD_BUSY=true;
+  const result=await cloudRequest('lms-data',{action:'attendance',sessionKey:k});
+  if(!result||!result.attendance)throw new Error('Konfirmasi kehadiran dari cloud tidak lengkap.');
+  U.att=U.att||{};U.att[k]=result.attendance;
+  log('Check-in '+L[k]+': '+result.attendance.st+(result.alreadyRecorded?' (terkonfirmasi dari cloud)':''));
+  toast((result.alreadyRecorded?'Kehadiran sudah tercatat di cloud: ':'Kehadiran berhasil tercatat di cloud: ')+result.attendance.st,'ok');
+ }catch(e){
+  U.att=U.att||{};U.att[k]={st:'Belum Tersinkronisasi',t:prior?.t||now(),pending:true};
+  try{localStorage.setItem(KEY,JSON.stringify(DB))}catch(_e){}
+  toast('Check-in belum tersimpan di cloud: '+e.message+'. Selagi sesi masih berlangsung, coba ulangi sinkronisasi.','err');
+ }finally{
+  CLOUD_BUSY=false;ATTENDANCE_BUSY[k]=false;render();
+ }
 }
 function joinVR(k){const s=DB.sched[k];if(vrStat(k)!=='live'||!s.zoom)return;checkin(k,true);window.open(s.zoom,'_blank','noopener');render()}
 function vrView(k){
  const s=DB.sched[k],st=vrStat(k),a=U.att?.[k];
  const b={live:'<span class="badge bg-w">🟡 Sedang Berlangsung</span>',selesai:'<span class="badge bg-ok">🟢 Selesai</span>'}[st]||'';
+ const attendanceLabel=a?.pending?'Belum tersinkronisasi':a?.st;
  return `<div class="card"><h3 style="margin-top:0">${esc(s.title||activityLabel(k))}</h3>${b}
  <div style="margin:12px 0;line-height:1.7">Tanggal: <b>${fmtD(s)}</b><br>Waktu: <b>${s.start}–${s.end} WIT</b><br>Status kegiatan: <b>${st==='live'?'Sedang berlangsung':'Selesai'}</b></div>
  <p class="muted">${esc(s.desc||'')}</p>
- <div class="row"><button class="btn" ${st==='live'&&s.zoom&&!0?'':'disabled'} onclick="joinVR('${k}')">JOIN ZOOM</button>
- ${st==='live'&&!a?`<button class="btn s" onclick="checkin('${k}');render()">Check-in Kehadiran</button>`:''}</div>
- <div class="muted" style="margin-top:12px">Kehadiran: ${a?`<b>${a.st}</b> · tercatat ${fmt(a.t)}`:'Belum tercatat'}</div></div>`;
+ <div class="row"><button class="btn" ${st==='live'&&s.zoom?'':'disabled'} onclick="joinVR('${k}')">JOIN ZOOM</button>
+ ${st==='live'&&(!a||a.pending)?`<button class="btn s" onclick="checkin('${k}')">${a?.pending?'Ulangi Sinkronisasi Kehadiran':'Check-in Kehadiran'}</button>`:''}</div>
+ <div class="muted" style="margin-top:12px">Kehadiran: ${a?`<b>${esc(attendanceLabel||'Belum tercatat')}</b> · ${a.pending?'menunggu konfirmasi cloud':'tercatat '+fmt(a.t)}`:'Belum tercatat'}</div></div>`;
 }
 function lockCard(k){
  const isVR=k==='vr1'||k==='vr2',s=DB.sched[k];
